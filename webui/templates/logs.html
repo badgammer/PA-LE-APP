@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Logs{% endblock %}
+{% block content %}
+<h1>Renewal / deployment log</h1>
+<p class="subtitle">
+  Showing last {{ n }} lines of <span class="mono">/var/log/acme-appliance.log</span>.
+  {% for label in active_renewals %}
+    <span class="badge" style="border-color:#d8a531;color:#d8a531;">Renewing: {{ label }}</span>
+  {% endfor %}
+</p>
+<p>
+  <a class="btn btn-secondary" href="{{ url_for('logs', n=n) }}">Refresh</a>
+  <a class="btn btn-secondary" href="{{ url_for('logs', n=1000) }}">Show last 1000 lines</a>
+</p>
+<div class="log-box">{% for line in lines %}{{ line }}{% else %}(log file is empty or has not been created yet){% endfor %}</div>
+{% endblock %}

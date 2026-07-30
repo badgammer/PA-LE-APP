@@ -1,0 +1,15 @@
+[Unit]
+Description=ACME certificate renewal + Palo Alto GlobalProtect deployment
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=acme-appliance
+Group=acme-appliance
+Environment=ACME_APPLIANCE_CONFIG=/etc/acme-appliance/appliance.yaml
+ExecStart=/opt/acme-appliance/bin/acme-renew.sh
+ProtectSystem=strict
+ReadWritePaths=/var/log /etc/letsencrypt /var/lib/letsencrypt /etc/acme-appliance
+NoNewPrivileges=true
+PrivateTmp=true

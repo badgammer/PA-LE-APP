@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}{{ "Edit" if mode == "edit" else "Add" }} Firewall{% endblock %}
+{% block content %}
+<h1>{{ "Edit" if mode == "edit" else "Add" }} firewall</h1>
+<div class="card">
+  <form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label for="name">Firewall name (unique, e.g. "hq-firewall")</label>
+    <input type="text" id="name" name="name" required value="{{ name }}" {% if mode == "edit" %}readonly{% endif %}>
+    <label for="hostname">Management hostname or IP</label>
+    <input type="text" id="hostname" name="hostname" required value="{{ settings.get('hostname', '') }}">
+    <h2>Authentication</h2>
+    <p class="helptext">Prefer a long-lived API key. Only fill in one method -- API key takes priority if both are present.</p>
+    <label for="api_key">API key</label>
+    <input type="password" id="api_key" name="api_key"
+           placeholder="{{ '(unchanged - leave blank to keep current value)' if mode == 'edit' and settings.get('api_key') else 'Enter API key' }}">
+    <label for="username">Username (alternative to API key)</label>
+    <input type="text" id="username" name="username" value="{{ settings.get('username', '') }}">
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password"
+           placeholder="{{ '(unchanged - leave blank to keep current value)' if mode == 'edit' and settings.get('password') else 'Enter password' }}">
+    <div class="checkbox-row">
+      <input type="checkbox" id="verify_tls" name="verify_tls" {% if settings.get('verify_tls') %}checked{% endif %}>
+      <label for="verify_tls" style="margin:0;">Verify TLS certificate (leave unchecked for self-signed mgmt certs)</label>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" id="cleanup_old_certs" name="cleanup_old_certs" {% if settings.get('cleanup_old_certs', True) %}checked{% endif %}>
+      <label for="cleanup_old_certs" style="margin:0;">Automatically delete old certs sharing the same prefix after a successful renewal</label>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn">{{ "Save changes" if mode == "edit" else "Add firewall" }}</button>
+      <a href="{{ url_for('firewalls_list') }}" class="btn btn-secondary">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

@@ -1,0 +1,215 @@
+{% extends "base.html" %}
+{% block title %}{{ "Edit" if mode == "edit" else "Add" }} Domain{% endblock %}
+{% block content %}
+<h1>{{ "Edit" if mode == "edit" else "Add" }} domain</h1>
+
+{% if mode == "edit" %}
+<div class="card">
+  <h2 style="margin-top:0;">Renewal actions</h2>
+  <p class="helptext">Runs certbot for just this domain in the background. "Renew now" is a no-op unless the certificate is inside its 30-day renewal window; "Force renew" ignores that window and always issues a new certificate.</p>
+  <form class="inline" method="post" action="{{ url_for('domain_renew', name=entry.name) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit" class="btn btn-secondary">Renew now</button>
+  </form>
+  <form class="inline" method="post" action="{{ url_for('domain_renew', name=entry.name) }}"
+        onsubmit="return confirm('Force-renew {{ entry.name }} now, ignoring the normal 30-day window?');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="force" value="on">
+    <button type="submit" class="btn btn-secondary">Force renew now</button>
+  </form>
+  <p style="margin-top:10px;"><a href="{{ url_for('logs') }}">View log &rarr;</a></p>
+</div>
+{% endif %}
+
+{% if not providers %}
+  <div class="flash flash-error">No DNS providers configured yet. <a href="{{ url_for('dns_provider_new') }}">Add one first</a>.</div>
+{% elif not firewalls %}
+  <div class="flash flash-error">No firewalls configured yet. <a href="{{ url_for('firewall_new') }}">Add one first</a>.</div>
+{% else %}
+<div class="card">
+  <form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    <label for="name">Domain / FQDN (e.g. vpn.example.com, or *.example.com for a wildcard)</label>
+    <input type="text" id="name" name="name" required
+           value="{{ entry.name if entry else '' }}"
+           {% if mode == 'edit' %}readonly{% endif %}>
+    <p class="helptext">Wildcards are supported -- use e.g. "*.example.com". Combine with "Additional names" below to also cover the bare apex domain on the same certificate.</p>
+
+    <label for="additional_names">Additional names (SANs) on this same certificate -- comma-separated, optional</label>
+    <input type="text" id="additional_names" name="additional_names"
+           placeholder="e.g. example.com"
+           value="{{ entry.additional_names | join(', ') if entry and entry.additional_names else '' }}">
+    <p class="helptext">Every name here is issued as part of the SAME certificate as the domain above (a "SAN" cert). The most common use is pairing a wildcard with its bare apex domain, e.g. name = "*.example.com" and additional names = "example.com".</p>
+
+    <label for="dns_provider">DNS provider (used for the ACME DNS-01 challenge)</label>
+    <select id="dns_provider" name="dns_provider" required>
+      {% for pname, pcfg in providers.items() %}
+        <option value="{{ pname }}" {% if entry and entry.dns_provider == pname %}selected{% endif %}>
+          {{ pname }} ({{ pcfg.type }})
+        </option>
+      {% endfor %}
+    </select>
+    <p class="helptext">All names above must be covered by this one DNS provider/zone.</p>
+
+    <label for="cert_name_prefix">Certificate name prefix on the firewall</label>
+    <input type="text" id="cert_name_prefix" name="cert_name_prefix"
+           value="{{ entry.cert_name_prefix if entry else 'gp-portal-cert' }}">
+    <p class="helptext">Each renewal creates a new cert object named "&lt;prefix&gt;-&lt;timestamp&gt;" rather than overwriting in place.</p>
+
+    <h2>Firewall targets</h2>
+    <p class="helptext">Where to deploy this certificate. Add one row per firewall (e.g. an HA pair, or portal + gateway) -- each row gets its own SSL/TLS Service Profile. Use "Fetch profiles" to pull the list of profiles that already exist on the selected firewall instead of typing the name by hand.</p>
+
+    <div id="target-rows">
+      {% if entry and entry.panos_targets %}
+        {% for t in entry.panos_targets %}
+        <div class="target-row">
+          <div>
+            <label>Firewall</label>
+            <select name="target_firewall[]">
+              {% for fname in firewalls.keys() %}
+                <option value="{{ fname }}" {% if t.firewall == fname %}selected{% endif %}>{{ fname }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label>Target type</label>
+            <select name="target_cert_type[]">
+              <option value="ssl_tls_profile" {% if t.ssl_tls_profile %}selected{% endif %}>SSL/TLS Service Profile</option>
+              <option value="globalprotect_portal" {% if t.globalprotect_portal %}selected{% endif %}>GlobalProtect portal cert field</option>
+            </select>
+          </div>
+          <div>
+            <label>Profile / portal name</label>
+            <div class="profile-fetch-row">
+              <input type="text" name="target_cert_value[]" value="{{ t.ssl_tls_profile or t.globalprotect_portal or '' }}">
+              <button type="button" class="btn btn-secondary btn-small" onclick="fetchProfilesForRow(this)">Fetch profiles</button>
+            </div>
+            <div class="profile-fetch-status"></div>
+          </div>
+          <div>
+            <label>vsys (optional)</label>
+            <input type="text" name="target_vsys[]" value="{{ t.vsys or '' }}">
+          </div>
+          <div>
+            <button type="button" class="btn btn-secondary btn-small" onclick="this.closest('.target-row').remove()">Remove</button>
+          </div>
+        </div>
+        {% endfor %}
+      {% endif %}
+    </div>
+
+    <button type="button" class="btn btn-secondary btn-small" onclick="addTargetRow()">+ Add another firewall target</button>
+
+    <div class="form-actions">
+      <button type="submit" class="btn">{{ "Save changes" if mode == "edit" else "Add domain" }}</button>
+      <a href="{{ url_for('domains_list') }}" class="btn btn-secondary">Cancel</a>
+    </div>
+  </form>
+</div>
+
+<template id="target-row-template">
+  <div class="target-row">
+    <div>
+      <label>Firewall</label>
+      <select name="target_firewall[]">
+        {% for fname in firewalls.keys() %}
+          <option value="{{ fname }}">{{ fname }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label>Target type</label>
+      <select name="target_cert_type[]">
+        <option value="ssl_tls_profile">SSL/TLS Service Profile</option>
+        <option value="globalprotect_portal">GlobalProtect portal cert field</option>
+      </select>
+    </div>
+    <div>
+      <label>Profile / portal name</label>
+      <div class="profile-fetch-row">
+        <input type="text" name="target_cert_value[]">
+        <button type="button" class="btn btn-secondary btn-small" onclick="fetchProfilesForRow(this)">Fetch profiles</button>
+      </div>
+      <div class="profile-fetch-status"></div>
+    </div>
+    <div>
+      <label>vsys (optional)</label>
+      <input type="text" name="target_vsys[]">
+    </div>
+    <div>
+      <button type="button" class="btn btn-secondary btn-small" onclick="this.closest('.target-row').remove()">Remove</button>
+    </div>
+  </div>
+</template>
+
+<script>
+function addTargetRow() {
+  const tpl = document.getElementById('target-row-template');
+  const clone = tpl.content.cloneNode(true);
+  document.getElementById('target-rows').appendChild(clone);
+}
+if (document.getElementById('target-rows').children.length === 0) {
+  addTargetRow();
+}
+
+function fetchProfilesForRow(button) {
+  const row = button.closest('.target-row');
+  const fwSelect = row.querySelector('select[name="target_firewall[]"]');
+  const vsysInput = row.querySelector('input[name="target_vsys[]"]');
+  const profileInput = row.querySelector('input[name="target_cert_value[]"]');
+  const statusEl = row.querySelector('.profile-fetch-status');
+  const fw = fwSelect.value;
+  const vsys = vsysInput.value.trim();
+
+  if (!fw) {
+    statusEl.textContent = 'Select a firewall first.';
+    statusEl.className = 'profile-fetch-status err';
+    return;
+  }
+
+  statusEl.textContent = 'Fetching profiles from ' + fw + '...';
+  statusEl.className = 'profile-fetch-status';
+
+  let url = '/firewalls/' + encodeURIComponent(fw) + '/ssl-profiles';
+  if (vsys) url += '?vsys=' + encodeURIComponent(vsys);
+
+  fetch(url)
+    .then(r => r.json())
+    .then(data => {
+      if (data.ok) {
+        let listId = profileInput.getAttribute('list');
+        let datalist = listId ? document.getElementById(listId) : null;
+        if (!datalist) {
+          listId = 'profiles-' + Math.random().toString(36).slice(2);
+          datalist = document.createElement('datalist');
+          datalist.id = listId;
+          profileInput.setAttribute('list', listId);
+          row.appendChild(datalist);
+        }
+        datalist.innerHTML = '';
+        data.profiles.forEach(p => {
+          const opt = document.createElement('option');
+          opt.value = p;
+          datalist.appendChild(opt);
+        });
+        if (data.profiles.length) {
+          statusEl.textContent = 'Found ' + data.profiles.length + ' profile(s) -- start typing in the field above to see suggestions.';
+          statusEl.className = 'profile-fetch-status ok';
+        } else {
+          statusEl.textContent = 'Connected, but no SSL/TLS Service Profiles were found on that firewall.';
+          statusEl.className = 'profile-fetch-status err';
+        }
+      } else {
+        statusEl.textContent = 'Could not fetch profiles: ' + data.error;
+        statusEl.className = 'profile-fetch-status err';
+      }
+    })
+    .catch(err => {
+      statusEl.textContent = 'Request failed: ' + err;
+      statusEl.className = 'profile-fetch-status err';
+    });
+}
+</script>
+{% endif %}
+{% endblock %}

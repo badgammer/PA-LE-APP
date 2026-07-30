@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Initial Setup{% endblock %}
+{% block content %}
+<div class="login-wrap">
+  <h1>Create the admin account</h1>
+  <p class="subtitle">No users exist yet. This first account will manage the appliance configuration.</p>
+  <div class="card">
+    <form method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label for="username">Username</label>
+      <input type="text" id="username" name="username" required autofocus>
+      <label for="password">Password (min 10 characters)</label>
+      <input type="password" id="password" name="password" required minlength="10">
+      <label for="confirm">Confirm password</label>
+      <input type="password" id="confirm" name="confirm" required minlength="10">
+      <div class="checkbox-row">
+        <input type="checkbox" id="enable_totp" name="enable_totp">
+        <label for="enable_totp" style="margin:0;">Enable TOTP MFA (recommended)</label>
+      </div>
+      <p class="helptext">If enabled, you'll be shown a secret to add to an authenticator app after creating the account.</p>
+      <div class="form-actions">
+        <button type="submit" class="btn">Create admin account</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

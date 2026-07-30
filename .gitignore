@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Runtime / secrets -- never commit real config, credentials, or state
+config/appliance.yaml
+etc/acme-appliance/
+*.secret
+webui_secret_key
+users.yaml
+
+# Logs
+*.log
+
+# ISO/image build artifacts -- large, environment-specific, never commit
+iso-build/*.iso
+iso-build/output-*/
+iso-build/packer_cache/
+*.qcow2
+*.vmdk
+*.ova
+
+# OS/editor cruft
+.DS_Store
+*.swp
+
+# Folders
+.vs/

@@ -1,0 +1,31 @@
+[Unit]
+Description=ACME Appliance Web UI
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=acme-appliance
+Group=acme-appliance
+WorkingDirectory=/opt/acme-appliance/webui
+Environment=ACME_APPLIANCE_CONFIG=/etc/acme-appliance/appliance.yaml
+Environment=ACME_APPLIANCE_USERS=/etc/acme-appliance/users.yaml
+Environment=ACME_APPLIANCE_SECRET_KEY_FILE=/etc/acme-appliance/webui_secret_key
+Environment=ACME_APPLIANCE_LOG=/var/log/acme-appliance.log
+ExecStart=/opt/acme-appliance/venv/bin/gunicorn \
+    --bind 0.0.0.0:8443 \
+    --certfile /etc/acme-appliance/webui-tls/webui.crt \
+    --keyfile /etc/acme-appliance/webui-tls/webui.key \
+    --workers 1 \
+    --timeout 120 \
+    app:app
+Restart=on-failure
+RestartSec=5
+
+ProtectSystem=strict
+ReadWritePaths=/var/log /etc/acme-appliance /var/run
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

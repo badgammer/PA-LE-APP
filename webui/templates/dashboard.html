@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+<p class="subtitle">ACME certificate email: <span class="mono">{{ cfg.acme.email or "(not set)" }}</span> &middot;
+  ACME server: <span class="mono">{{ cfg.acme.server }}</span></p>
+<div class="grid-3">
+  <div class="card">
+    <div class="stat-value">{{ domain_count }}</div>
+    <div class="stat-label">Managed domains</div>
+    <p><a href="{{ url_for('domains_list') }}">View domains &rarr;</a></p>
+  </div>
+  <div class="card">
+    <div class="stat-value">{{ provider_count }}</div>
+    <div class="stat-label">DNS provider instances</div>
+    <p><a href="{{ url_for('dns_providers_list') }}">View DNS providers &rarr;</a></p>
+  </div>
+  <div class="card">
+    <div class="stat-value">{{ firewall_count }}</div>
+    <div class="stat-label">Palo Alto firewalls</div>
+    <p><a href="{{ url_for('firewalls_list') }}">View firewalls &rarr;</a></p>
+  </div>
+</div>
+<div class="card">
+  <h2 style="margin-top:0;">Run renewal now</h2>
+  <p class="helptext">Runs certbot for every configured domain right away. To renew just one domain, use the "Renew now" button on the <a href="{{ url_for('domains_list') }}">Domains page</a> instead.</p>
+  {% for label in active_renewals %}
+    <span class="badge" style="border-color:#d8a531;color:#d8a531;">Renewing: {{ label }}</span>
+  {% endfor %}
+  <form method="post" action="{{ url_for('renew_now') }}" style="margin-top:12px;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit" class="btn">Run renewal now (all domains)</button>
+  </form>
+</div>
+<div class="card">
+  <h2 style="margin-top:0;">Recent log activity</h2>
+  <div class="log-box">{% for line in last_lines %}{{ line }}{% else %}(no log entries yet){% endfor %}</div>
+  <p style="margin-top:10px;"><a href="{{ url_for('logs') }}">View full log &rarr;</a></p>
+</div>
+{% endblock %}

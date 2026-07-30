@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Firewalls{% endblock %}
+{% block content %}
+<h1>Palo Alto Firewalls</h1>
+<p class="subtitle">Firewalls the appliance is allowed to push certificates to.</p>
+<p><a class="btn" href="{{ url_for('firewall_new') }}">+ Add firewall</a></p>
+<table>
+  <thead><tr><th>Name</th><th>Hostname</th><th>Auth</th><th>Cleanup old certs</th><th></th></tr></thead>
+  <tbody>
+  {% for name, cfg in firewalls.items() %}
+    <tr>
+      <td class="mono">{{ name }}</td>
+      <td class="mono">{{ cfg.hostname }}</td>
+      <td>
+        {% if cfg.get("api_key") %}API key: {{ mask(cfg.api_key) }}
+        {% elif cfg.get("username") %}User: {{ cfg.username }}
+        {% else %}<span class="muted">not set</span>{% endif %}
+      </td>
+      <td>{{ "Yes" if cfg.get("cleanup_old_certs") else "No" }}</td>
+      <td class="actions">
+        <form class="inline" method="post" action="{{ url_for('firewall_test', name=name) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="btn btn-secondary btn-small">Test connection</button>
+        </form>
+        <a href="{{ url_for('firewall_edit', name=name) }}" class="btn btn-secondary btn-small">Edit</a>
+        <form class="inline" method="post" action="{{ url_for('firewall_delete', name=name) }}" onsubmit="return confirm('Delete firewall {{ name }}?');">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="btn btn-danger btn-small">Delete</button>
+        </form>
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5" class="muted">No firewalls configured yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

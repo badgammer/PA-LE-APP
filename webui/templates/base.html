@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}ACME Appliance{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+{% if current_user %}
+<header class="topbar">
+  <div class="brand">ACME / GlobalProtect Appliance</div>
+  <nav>
+    <a href="{{ url_for('dashboard') }}">Dashboard</a>
+    <a href="{{ url_for('domains_list') }}">Domains</a>
+    <a href="{{ url_for('dns_providers_list') }}">DNS Providers</a>
+    <a href="{{ url_for('firewalls_list') }}">Firewalls</a>
+    <a href="{{ url_for('logs') }}">Logs</a>
+    <a href="{{ url_for('account') }}">{{ current_user }}</a>
+    <a href="{{ url_for('logout') }}">Log out</a>
+  </nav>
+</header>
+{% endif %}
+<main class="container">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <div class="flash-list">
+      {% for category, message in messages %}
+        <div class="flash flash-{{ category }}">{{ message }}</div>
+      {% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>

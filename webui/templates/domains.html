@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Domains{% endblock %}
+{% block content %}
+<h1>Domains</h1>
+<p class="subtitle">Each entry maps a certificate to a DNS provider and one or more Palo Alto targets, each with its own SSL/TLS profile.</p>
+
+{% if any_renewal_in_progress %}
+  <div class="flash flash-success">A renewal is currently running. See the <a href="{{ url_for('logs') }}">log</a> for progress.</div>
+{% endif %}
+
+<p><a class="btn" href="{{ url_for('domain_new') }}">+ Add domain</a></p>
+
+<table>
+  <thead>
+    <tr><th>Domain</th><th>DNS Provider</th><th>Firewall targets</th><th>Cert expiry</th><th></th></tr>
+  </thead>
+  <tbody>
+  {% for row in rows %}
+    <tr>
+      <td class="mono">
+        {{ row.entry.name }}
+        {% if row.entry.additional_names %}
+          <div class="helptext">+ {{ row.entry.additional_names | join(", ") }}</div>
+        {% endif %}
+      </td>
+      <td><span class="badge">{{ row.entry.dns_provider }}</span></td>
+      <td>
+        {% for t in row.entry.panos_targets %}
+          <div>{{ t.firewall }} &rarr; {{ t.ssl_tls_profile or t.globalprotect_portal }}</div>
+        {% endfor %}
+      </td>
+      <td>{{ row.cert_expiry or "not yet issued" }}</td>
+      <td class="actions">
+        {% if row.renewal_in_progress %}
+          <span class="badge" style="border-color:#d8a531;color:#d8a531;">Renewing&hellip;</span>
+        {% else %}
+          <form class="inline" method="post" action="{{ url_for('domain_renew', name=row.entry.name) }}" title="Renew just this domain now">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-secondary btn-small">Renew now</button>
+          </form>
+        {% endif %}
+        {% if row.has_cert %}
+          <a href="{{ url_for('domain_download', name=row.entry.name) }}" class="btn btn-secondary btn-small"
+             title="Download fullchain/cert/chain/privkey as a zip">Download cert</a>
+        {% endif %}
+        <a href="{{ url_for('domain_edit', name=row.entry.name) }}" class="btn btn-secondary btn-small">Edit</a>
+        <form class="inline" method="post" action="{{ url_for('domain_delete', name=row.entry.name) }}" onsubmit="return confirm('Delete domain {{ row.entry.name }}?');">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="btn btn-danger btn-small">Delete</button>
+        </form>
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5" class="muted">No domains configured yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Verify MFA{% endblock %}
+{% block content %}
+<div class="login-wrap">
+  <h1>Enter your authentication code</h1>
+  <p class="subtitle">Check your authenticator app for the current 6-digit code.</p>
+  <div class="card">
+    <form method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label for="code">Authentication code</label>
+      <input type="text" id="code" name="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" required autofocus>
+      <div class="form-actions">
+        <button type="submit" class="btn">Verify</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

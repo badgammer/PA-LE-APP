@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Log in{% endblock %}
+{% block content %}
+<div class="login-wrap">
+  <h1>Log in</h1>
+  <p class="subtitle">ACME / Palo Alto GlobalProtect appliance configuration</p>
+  <div class="card">
+    <form method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label for="username">Username</label>
+      <input type="text" id="username" name="username" required autofocus>
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" required>
+      <div class="form-actions">
+        <button type="submit" class="btn">Log in</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

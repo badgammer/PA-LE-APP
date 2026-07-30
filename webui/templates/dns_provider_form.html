@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}{{ "Edit" if mode == "edit" else "Add" }} DNS Provider{% endblock %}
+{% block content %}
+<h1>{{ "Edit" if mode == "edit" else "Add" }} DNS provider</h1>
+{% if mode == "new" %}
+<div class="card">
+  <label for="type_selector">Provider type</label>
+  <select id="type_selector" onchange="location.search = '?type=' + this.value">
+    {% for type_key, meta in provider_fields.items() %}
+      <option value="{{ type_key }}" {% if type_key == selected_type %}selected{% endif %}>{{ meta.label }}</option>
+    {% endfor %}
+  </select>
+  <p class="helptext">Choose a type to see the settings it needs, then fill in the form below.</p>
+</div>
+{% endif %}
+<div class="card">
+  <form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="type" value="{{ selected_type }}">
+    {% if mode == "new" %}
+    <label for="instance_name">Instance name (unique, e.g. "azure-hoffman-net")</label>
+    <input type="text" id="instance_name" name="instance_name" required>
+    {% else %}
+    <label>Instance name</label>
+    <input type="text" value="{{ instance_name }}" readonly>
+    <label>Type</label>
+    <input type="text" value="{{ provider_fields[selected_type].label }}" readonly>
+    {% endif %}
+    <h2>{{ provider_fields[selected_type].label }} settings</h2>
+    {% for field in provider_fields[selected_type].fields %}
+      {% if field.type == "checkbox" %}
+        <div class="checkbox-row">
+          <input type="checkbox" id="{{ field.name }}" name="{{ field.name }}"
+                 {% if existing_settings.get(field.name, field.get('default', False)) %}checked{% endif %}>
+          <label for="{{ field.name }}" style="margin:0;">{{ field.label }}</label>
+        </div>
+      {% else %}
+        <label for="{{ field.name }}">{{ field.label }}{% if field.get("required") %} *{% endif %}</label>
+        <input
+          type="{{ 'password' if field.get('secret') else ('number' if field.type == 'number' else 'text') }}"
+          id="{{ field.name }}" name="{{ field.name }}"
+          {% if field.get("secret") %}
+            placeholder="{{ '(unchanged - leave blank to keep current value)' if mode == 'edit' and existing_settings.get(field.name) else 'Enter value' }}"
+          {% else %}
+            value="{{ existing_settings.get(field.name, field.get('default', '')) }}"
+          {% endif %}
+          {% if field.get("required") and not (mode == "edit" and field.get("secret")) %}required{% endif %}>
+      {% endif %}
+    {% endfor %}
+    <div class="form-actions">
+      <button type="submit" class="btn">{{ "Save changes" if mode == "edit" else "Add provider" }}</button>
+      <a href="{{ url_for('dns_providers_list') }}" class="btn btn-secondary">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

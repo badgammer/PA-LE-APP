@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Account{% endblock %}
+{% block content %}
+<h1>Account: {{ username }}</h1>
+<div class="card">
+  <h2 style="margin-top:0;">Change password</h2>
+  <form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="change_password">
+    <label for="current_password">Current password</label>
+    <input type="password" id="current_password" name="current_password" required>
+    <label for="new_password">New password (min 10 characters)</label>
+    <input type="password" id="new_password" name="new_password" required minlength="10">
+    <label for="confirm_password">Confirm new password</label>
+    <input type="password" id="confirm_password" name="confirm_password" required minlength="10">
+    <div class="form-actions">
+      <button type="submit" class="btn">Update password</button>
+    </div>
+  </form>
+</div>
+<div class="card">
+  <h2 style="margin-top:0;">Multi-factor authentication</h2>
+  {% if totp_enabled %}
+    <p>MFA is currently <strong>enabled</strong> for this account.</p>
+    <form method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="disable_totp">
+      <button type="submit" class="btn btn-danger">Disable MFA</button>
+    </form>
+  {% else %}
+    <p>MFA is currently <strong>disabled</strong> for this account.</p>
+    <form method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="enable_totp">
+      <button type="submit" class="btn">Enable MFA</button>
+    </form>
+    <p class="helptext">You'll be shown a secret/QR text to add to an authenticator app immediately after enabling.</p>
+  {% endif %}
+</div>
+{% endblock %}
