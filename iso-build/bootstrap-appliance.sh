@@ -39,7 +39,7 @@ fi
 
 log "Installing OS packages (epel-release, python3, certbot, openssl)..."
 dnf install -y epel-release
-dnf install -y python3 python3-pip python3-venv certbot openssl policycoreutils-python-utils
+dnf install -y python3 python3-pip certbot openssl policycoreutils-python-utils
 
 log "Creating service account '$SERVICE_USER' (if needed)..."
 id -u "$SERVICE_USER" &>/dev/null || useradd --system --home "$INSTALL_DIR" --shell /sbin/nologin "$SERVICE_USER"
