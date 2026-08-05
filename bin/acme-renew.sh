@@ -17,6 +17,19 @@
 # non-root account cannot create or write to -- so instead we point
 # certbot at appliance-owned directories via --config-dir/--work-dir/
 # --logs-dir.
+#
+# NOTE on --manual-public-ip-logging-ok: this flag was REMOVED entirely
+# in certbot 3.0.0 (it had been a deprecated no-op for a while before
+# that) -- see https://github.com/certbot/certbot/issues/9988. EPEL9's
+# certbot package is currently 3.1.0+, so on a stock Rocky/RHEL 9
+# install, passing this flag causes a hard
+# "certbot: error: unrecognized arguments: --manual-public-ip-logging-ok"
+# failure. Some older/EL8 or manually-installed certbot versions (<3.0)
+# still REQUIRE this flag to avoid an interactive confirmation prompt
+# when running non-interactively. Rather than hardcoding one behavior
+# and breaking the other, this script detects the installed certbot's
+# major version at runtime and only includes the flag on versions that
+# still need it.
 
 set -euo pipefail
 
@@ -49,6 +62,23 @@ if ! command -v certbot >/dev/null 2>&1; then
   log "Install it with: sudo dnf install -y epel-release certbot"
   log "(then re-run this script or trigger a renewal from the web UI)"
   exit 1
+fi
+
+# Determine whether this certbot install still needs (and accepts)
+# --manual-public-ip-logging-ok. certbot --version prints e.g.
+# "certbot 3.1.0"; older releases (e.g. "certbot 1.32.0" on EL8) print
+# the same format. If parsing fails for any reason, default to OMITTING
+# the flag -- that matches all currently-shipping certbot versions
+# (3.0+), so it's the safer default going forward as older versions age
+# out of use.
+IP_LOGGING_FLAG=""
+CERTBOT_VERSION_RAW="$(certbot --version 2>&1 || true)"
+CERTBOT_MAJOR="$(echo "$CERTBOT_VERSION_RAW" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 | cut -d. -f1)"
+if [[ "$CERTBOT_MAJOR" =~ ^[0-9]+$ ]] && [ "$CERTBOT_MAJOR" -lt 3 ]; then
+  IP_LOGGING_FLAG="--manual-public-ip-logging-ok"
+  log "Detected certbot major version $CERTBOT_MAJOR (< 3) -- including --manual-public-ip-logging-ok"
+else
+  log "Detected certbot version '${CERTBOT_VERSION_RAW:-unknown}' -- --manual-public-ip-logging-ok not needed/accepted (removed in certbot 3.0+), omitting it"
 fi
 
 for dir in "$LE_CONFIG_DIR" "$LE_WORK_DIR" "$LE_LOGS_DIR"; do
@@ -121,7 +151,7 @@ while IFS=$'\t' read -r CERT_NAME ENTRY_NAME NAME_LIST; do
       --email "$EMAIL" \
       --server "$SERVER" \
       --preferred-challenges dns \
-      --manual --manual-public-ip-logging-ok \
+      --manual $IP_LOGGING_FLAG \
       --manual-auth-hook "$APPLIANCE_DIR/dns_dispatcher.py add" \
       --manual-cleanup-hook "$APPLIANCE_DIR/dns_dispatcher.py remove" \
       --deploy-hook "$APPLIANCE_DIR/deploy_to_panos.py" \
