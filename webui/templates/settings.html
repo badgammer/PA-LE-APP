@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}ACME Settings{% endblock %}
+{% block content %}
+<h1>ACME Settings</h1>
+<p class="subtitle">The account email and ACME server used for every certificate this appliance issues.</p>
+
+<div class="card">
+  <form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    <label for="acme_email">Account email</label>
+    <input type="text" id="acme_email" name="acme_email" required
+           value="{{ cfg.acme.email }}" placeholder="netops@yourdomain.com">
+    <p class="helptext">
+      Must be a real, monitored mailbox -- Let's Encrypt sends certificate expiration
+      warnings and any policy/revocation notices here, and will <strong>reject account
+      registration outright</strong> if you use a placeholder domain like
+      <span class="mono">@example.com</span>, <span class="mono">@example.org</span>, or
+      <span class="mono">@example.net</span>.
+    </p>
+
+    <label for="acme_server_choice">ACME server</label>
+    <select id="acme_server_choice" name="acme_server_choice" onchange="toggleCustomServer()">
+      <option value="production" {% if server_choice == "production" %}selected{% endif %}>
+        Production (real, trusted certificates)
+      </option>
+      <option value="staging" {% if server_choice == "staging" %}selected{% endif %}>
+        Staging (untrusted test certificates, no rate limits -- use while testing)
+      </option>
+      <option value="custom" {% if server_choice == "custom" %}selected{% endif %}>
+        Custom URL
+      </option>
+    </select>
+
+    <div id="custom_server_row" style="{% if server_choice != 'custom' %}display:none;{% endif %}">
+      <label for="acme_server_custom">Custom ACME directory URL</label>
+      <input type="text" id="acme_server_custom" name="acme_server_custom"
+             value="{{ cfg.acme.server if server_choice == 'custom' else '' }}"
+             placeholder="https://...">
+    </div>
+
+    <p class="helptext" style="margin-top:14px;">
+      Current server: <span class="mono">{{ cfg.acme.server }}</span><br>
+      Production: <span class="mono">{{ production_server }}</span><br>
+      Staging: <span class="mono">{{ staging_server }}</span>
+    </p>
+
+    <div class="form-actions">
+      <button type="submit" class="btn">Save settings</button>
+    </div>
+  </form>
+</div>
+
+<script>
+function toggleCustomServer() {
+  const choice = document.getElementById('acme_server_choice').value;
+  document.getElementById('custom_server_row').style.display = (choice === 'custom') ? 'block' : 'none';
+}
+</script>
+{% endblock %}

@@ -85,14 +85,6 @@ class PanosClient:
         return root
 
     def system_info(self) -> dict:
-        """
-        Used by the web UI's "Test Connection" button. This is an
-        Operational Requests (type=op) call -- if the admin role assigned
-        to this account doesn't have "Operational Requests" enabled under
-        Device > Admin Roles > <role> > XML API, this call fails even
-        though Configuration-only actions (like importing a certificate)
-        might still succeed.
-        """
         text = self._get({"type": "op", "cmd": "<show><system><info></info></system></show>"})
         root = self._check_success(text, "system_info")
         info = root.find(".//system")
@@ -106,15 +98,63 @@ class PanosClient:
 
     def import_certificate(self, cert_name: str, cert_path: str, key_path: str,
                             passphrase: str = None) -> None:
-        params = {"type": "import", "category": "certificate",
-                   "certificate-name": cert_name, "format": "pem"}
-        with open(cert_path, "rb") as cert_f, open(key_path, "rb") as key_f:
-            files = {"file": cert_f, "keyfile": key_f}
-            if passphrase:
-                params["passphrase"] = passphrase
-            text = self._post_files(params, files)
+        """
+        Imports a certificate AND its private key together onto the
+        firewall as a PAN-OS "keypair" object.
+
+        IMPORTANT -- this is NOT the same as PAN-OS's category=certificate
+        import path, which uploads ONLY the public certificate. There is
+        no private key involved in that request at all; a "keyfile"
+        multipart field is not part of that API and is silently ignored
+        if you include one. To get a certificate onto the firewall WITH
+        its private key (required for anything that presents the cert
+        over TLS -- an SSL/TLS Service Profile, or the GlobalProtect
+        portal's own certificate field), you must use category=keypair
+        instead. That API expects a SINGLE PEM file containing BOTH the
+        certificate and the private key concatenated together in one
+        multipart "file" field -- not two separate files/fields.
+
+        Symptom if this isn't done correctly: the certificate object
+        exists on the firewall and looks fine -- import "succeeds",
+        "Test Connection" is unaffected -- but assigning it to an SSL/TLS
+        Service Profile and committing fails PAN-OS's pre-commit
+        validation ("a certificate used by an SSL/TLS profile must have
+        a private key"). Because that validation failure happens BEFORE
+        a commit job is even created, no job appears in the firewall's
+        Task Manager at all -- which looks exactly like "the firewall
+        never even attempted to commit," rather than "the commit failed."
+
+        passphrase: PAN-OS's keypair import API requires this parameter
+        to be present (non-empty) on every keypair import call, but it
+        is only actually USED to decrypt the private key if that key's
+        PEM content itself indicates it's encrypted (e.g. "-----BEGIN
+        ENCRYPTED PRIVATE KEY-----" / a "Proc-Type: 4,ENCRYPTED"
+        header). certbot's default private keys are NOT encrypted, so if
+        you don't supply a real passphrase, a fixed placeholder value is
+        sent purely to satisfy the API's "must be present" requirement --
+        it has no effect on an unencrypted key.
+        """
+        with open(cert_path, "rb") as cert_f:
+            cert_bytes = cert_f.read()
+        with open(key_path, "rb") as key_f:
+            key_bytes = key_f.read()
+
+        combined = cert_bytes
+        if not combined.endswith(b"\n"):
+            combined += b"\n"
+        combined += key_bytes
+
+        params = {
+            "type": "import", "category": "keypair",
+            "certificate-name": cert_name, "format": "pem",
+            # Always present (see docstring) -- use the real passphrase if
+            # the key is actually encrypted, otherwise an inert placeholder.
+            "passphrase": passphrase or "unused-key-is-not-encrypted",
+        }
+        files = {"file": (f"{cert_name}.pem", combined)}
+        text = self._post_files(params, files)
         self._check_success(text, f"import_certificate({cert_name})")
-        log.info("Imported certificate %s", cert_name)
+        log.info("Imported certificate+key %s", cert_name)
 
     def set_ssl_tls_profile_certificate(self, profile_name: str, cert_name: str,
                                          vsys: str = None) -> None:
@@ -159,12 +199,6 @@ class PanosClient:
         return [e.attrib["name"] for e in root.findall(".//certificate/entry")]
 
     def list_ssl_tls_profiles(self, vsys: str = None):
-        """
-        Return the names of SSL/TLS Service Profiles currently configured
-        on the firewall. Used by the web UI to let you pick a real,
-        already-existing profile from a list instead of typing its name
-        by hand (and risking a typo that silently fails to apply).
-        """
         import xml.etree.ElementTree as ET
         names = []
 

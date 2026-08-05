@@ -3,7 +3,8 @@
 {% block content %}
 <h1>Dashboard</h1>
 <p class="subtitle">ACME certificate email: <span class="mono">{{ cfg.acme.email or "(not set)" }}</span> &middot;
-  ACME server: <span class="mono">{{ cfg.acme.server }}</span></p>
+  ACME server: <span class="mono">{{ cfg.acme.server }}</span> &middot;
+  <a href="{{ url_for('settings_page') }}">Edit</a></p>
 <div class="grid-3">
   <div class="card">
     <div class="stat-value">{{ domain_count }}</div>

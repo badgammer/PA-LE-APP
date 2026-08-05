@@ -9,27 +9,6 @@
 #   acme-renew.sh                     # process every configured domain entry
 #   acme-renew.sh <domain>            # process only the entry containing <domain>
 #   acme-renew.sh <domain> --force    # same, ignoring certbot's 30-day renewal window
-#
-# NOTE on certbot's storage directories: this appliance runs certbot as an
-# UNPRIVILEGED service account (acme-appliance), not root. certbot's
-# normal defaults (/etc/letsencrypt, /var/lib/letsencrypt,
-# /var/log/letsencrypt) are root-owned system directories that a
-# non-root account cannot create or write to -- so instead we point
-# certbot at appliance-owned directories via --config-dir/--work-dir/
-# --logs-dir.
-#
-# NOTE on --manual-public-ip-logging-ok: this flag was REMOVED entirely
-# in certbot 3.0.0 (it had been a deprecated no-op for a while before
-# that) -- see https://github.com/certbot/certbot/issues/9988. EPEL9's
-# certbot package is currently 3.1.0+, so on a stock Rocky/RHEL 9
-# install, passing this flag causes a hard
-# "certbot: error: unrecognized arguments: --manual-public-ip-logging-ok"
-# failure. Some older/EL8 or manually-installed certbot versions (<3.0)
-# still REQUIRE this flag to avoid an interactive confirmation prompt
-# when running non-interactively. Rather than hardcoding one behavior
-# and breaking the other, this script detects the installed certbot's
-# major version at runtime and only includes the flag on versions that
-# still need it.
 
 set -euo pipefail
 
@@ -60,17 +39,11 @@ fi
 if ! command -v certbot >/dev/null 2>&1; then
   log "ERROR: certbot is not installed or not on PATH."
   log "Install it with: sudo dnf install -y epel-release certbot"
-  log "(then re-run this script or trigger a renewal from the web UI)"
   exit 1
 fi
 
-# Determine whether this certbot install still needs (and accepts)
-# --manual-public-ip-logging-ok. certbot --version prints e.g.
-# "certbot 3.1.0"; older releases (e.g. "certbot 1.32.0" on EL8) print
-# the same format. If parsing fails for any reason, default to OMITTING
-# the flag -- that matches all currently-shipping certbot versions
-# (3.0+), so it's the safer default going forward as older versions age
-# out of use.
+# certbot 3.0+ removed --manual-public-ip-logging-ok; older versions still
+# require it. Detect at runtime so this works regardless of installed version.
 IP_LOGGING_FLAG=""
 CERTBOT_VERSION_RAW="$(certbot --version 2>&1 || true)"
 CERTBOT_MAJOR="$(echo "$CERTBOT_VERSION_RAW" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 | cut -d. -f1)"
@@ -84,9 +57,6 @@ fi
 for dir in "$LE_CONFIG_DIR" "$LE_WORK_DIR" "$LE_LOGS_DIR"; do
   if ! mkdir -p "$dir" 2>/tmp/acme-renew-mkdir-err.$$; then
     log "ERROR: could not create '$dir': $(cat /tmp/acme-renew-mkdir-err.$$ 2>/dev/null)"
-    log "This usually means the service account doesn't own this directory,"
-    log "or (if triggered from the web UI) the acme-webui.service systemd"
-    log "unit's ReadWritePaths doesn't include it."
     rm -f /tmp/acme-renew-mkdir-err.$$
     exit 1
   fi
@@ -95,6 +65,14 @@ done
 
 EMAIL=$(python3 -c "import yaml,sys; print(yaml.safe_load(open('$CONFIG'))['acme']['email'])")
 SERVER=$(python3 -c "import yaml,sys; print(yaml.safe_load(open('$CONFIG'))['acme']['server'])")
+
+if [ -z "$EMAIL" ] || [[ "$EMAIL" == *"@example.com" ]] || [[ "$EMAIL" == *"@example.org" ]] || [[ "$EMAIL" == *"@example.net" ]]; then
+  log "ERROR: acme.email in $CONFIG is not set to a real address (currently: '$EMAIL')."
+  log "Let's Encrypt rejects placeholder domains like example.com/.org/.net during"
+  log "account registration. Set a real, monitored email via the web UI's Settings"
+  log "page, or edit $CONFIG directly."
+  exit 1
+fi
 
 ALL_ENTRIES=$(python3 -c "
 import sys

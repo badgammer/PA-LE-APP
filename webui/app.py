@@ -3,7 +3,8 @@
 Simple web frontend for configuring the ACME / Palo Alto appliance:
 DNS provider instances, target firewalls, and the domains that tie them
 together -- plus a log viewer, on-demand renewal triggers, an SSL/TLS
-profile picker, certificate export, and OS update checking/applying.
+profile picker, certificate export, ACME account settings, and OS update
+checking/applying.
 """
 
 import io
@@ -40,6 +41,17 @@ LETSENCRYPT_LIVE_DIR = os.environ.get(
 SECRET_KEY_PATH = os.environ.get(
     "ACME_APPLIANCE_SECRET_KEY_FILE", "/etc/acme-appliance/webui_secret_key"
 )
+
+# Domains ACME servers explicitly reject for account registration -- used
+# to give an immediate, clear error on the Settings form instead of
+# letting the user find out only when the next renewal fails.
+PLACEHOLDER_EMAIL_DOMAINS = {
+    "example.com", "example.org", "example.net", "example.edu",
+    "test.com", "localhost", "invalid",
+}
+
+PRODUCTION_ACME_SERVER = "https://acme-v02.api.letsencrypt.org/directory"
+STAGING_ACME_SERVER = "https://acme-staging-v02.api.letsencrypt.org/directory"
 
 app = Flask(__name__)
 
@@ -111,8 +123,6 @@ def _appliance_log(message: str) -> None:
         pass
 
 
-# ------------------------------------------------------- renewal locking
-
 def _safe_lock_name(domain: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", domain)
 
@@ -154,8 +164,6 @@ def _start_renewal(lock_path: str, args: list) -> None:
         start_new_session=True,
     )
 
-
-# ------------------------------------------------------------ first-run
 
 @app.route("/setup", methods=["GET", "POST"])
 def setup():
@@ -241,6 +249,63 @@ def dashboard():
     )
 
 
+# --------------------------------------------------------------- settings
+
+@app.route("/settings", methods=["GET", "POST"])
+@login_required
+def settings_page():
+    cfg = store.load_config()
+    if request.method == "POST":
+        check_csrf()
+        email = request.form.get("acme_email", "").strip()
+        server_choice = request.form.get("acme_server_choice", "production")
+        custom_server = request.form.get("acme_server_custom", "").strip()
+
+        error = None
+        if not email or "@" not in email or email.startswith("@") or email.endswith("@"):
+            error = "Enter a valid email address."
+        else:
+            domain_part = email.rsplit("@", 1)[-1].lower()
+            if domain_part in PLACEHOLDER_EMAIL_DOMAINS:
+                error = (
+                    f"'{domain_part}' is a reserved/placeholder domain -- Let's Encrypt "
+                    "will reject account registration with this address. Use a real, "
+                    "monitored email address (this is where certificate expiration "
+                    "warnings will be sent)."
+                )
+
+        if server_choice == "production":
+            server = PRODUCTION_ACME_SERVER
+        elif server_choice == "staging":
+            server = STAGING_ACME_SERVER
+        else:
+            server = custom_server
+            if not error and not server.startswith("https://"):
+                error = "Custom ACME server URL must start with https://"
+
+        if error:
+            flash(error, "error")
+        else:
+            cfg["acme"]["email"] = email
+            cfg["acme"]["server"] = server
+            store.save_config(cfg)
+            flash("ACME settings updated.", "success")
+            return redirect(url_for("settings_page"))
+
+    current_server = cfg["acme"].get("server", "")
+    if current_server == PRODUCTION_ACME_SERVER:
+        server_choice = "production"
+    elif current_server == STAGING_ACME_SERVER:
+        server_choice = "staging"
+    else:
+        server_choice = "custom"
+
+    return render_template(
+        "settings.html", cfg=cfg, server_choice=server_choice,
+        production_server=PRODUCTION_ACME_SERVER, staging_server=STAGING_ACME_SERVER,
+    )
+
+
 @app.route("/renew-now", methods=["POST"])
 @login_required
 def renew_now():
@@ -304,8 +369,6 @@ def logs():
     return render_template("logs.html", lines=_tail_log(n), n=n,
                             active_renewals=_active_lock_labels())
 
-
-# --------------------------------------------------------------- domains
 
 @app.route("/domains")
 @login_required
@@ -479,8 +542,6 @@ def _domain_from_form(cfg):
     return name, entry, None
 
 
-# ------------------------------------------------- SSL/TLS profile picker
-
 @app.route("/firewalls/<name>/ssl-profiles")
 @login_required
 def firewall_ssl_profiles(name):
@@ -494,8 +555,6 @@ def firewall_ssl_profiles(name):
         return jsonify({"ok": True, "profiles": result})
     return jsonify({"ok": False, "error": result})
 
-
-# ---------------------------------------------------------- DNS providers
 
 @app.route("/dns-providers")
 @login_required
@@ -609,8 +668,6 @@ def _settings_from_form(provider_type: str, existing_settings: dict) -> dict:
     return settings
 
 
-# -------------------------------------------------------------- firewalls
-
 @app.route("/firewalls")
 @login_required
 def firewalls_list():
@@ -706,8 +763,6 @@ def _firewall_settings_from_form(existing: dict) -> dict:
     return settings
 
 
-# ------------------------------------------------------------ system updates
-
 @app.route("/system")
 @login_required
 def system_page():
@@ -742,11 +797,6 @@ def system_apply():
     except system_updates.StepUpAuthError as exc:
         flash(str(exc), "error")
     finally:
-        # Best-effort: drop local references to the submitted credential
-        # as soon as we're done with this request. Flask/Werkzeug may
-        # still hold the raw form data for the duration of the request
-        # object's lifetime, but we avoid keeping any of our own copies
-        # around longer than necessary.
         password = None  # noqa: F841
     return redirect(url_for("system_page"))
 
@@ -766,8 +816,6 @@ def system_reboot():
         password = None  # noqa: F841
     return redirect(url_for("system_page"))
 
-
-# --------------------------------------------------------------- account
 
 @app.route("/account", methods=["GET", "POST"])
 @login_required
