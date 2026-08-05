@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 """
 certbot --deploy-hook script. Runs only after certbot successfully issues
-or renews a certificate. Reads the standard certbot deploy-hook env vars
-(RENEWED_LINEAGE, RENEWED_DOMAINS), looks up which Palo Alto firewall(s)
-should receive this certificate from appliance.yaml, and:
+or renews a certificate.
 
-    1. Imports the new cert+key into each target firewall (unique name
-       per run so we never clobber a cert that's still referenced).
-    2. Points the configured SSL/TLS Service Profile (or GlobalProtect
-       portal certificate field) at the new cert.
-    3. Commits.
-    4. Optionally deletes older certs sharing the same prefix so the
-       firewall's certificate store doesn't grow unbounded.
+Reads RENEWED_LINEAGE (the certbot lineage directory containing
+fullchain.pem/privkey.pem) and RENEWED_DOMAINS (space-separated domain
+names) from the environment, finds the matching domains[] entry for
+each, and imports+deploys the certificate to every configured PAN-OS
+target.
 
-Wired up automatically by bin/acme-renew.sh - you should not need to run
-this by hand.
+This is also reused directly (NOT just via certbot) by
+bin/redeploy-cert.sh for the web UI's "Redeploy to firewall" button --
+that script sets these same two env vars to point at an ALREADY-ISSUED
+lineage on disk, letting you re-run just the PAN-OS import/attach/commit
+steps without a new ACME issuance (and without consuming Let's Encrypt
+rate-limit headroom). Nothing in this file needs to know or care which
+of the two callers invoked it.
 """
-
 import datetime
 import logging
 import os
@@ -32,7 +32,7 @@ CONFIG_PATH = os.environ.get("ACME_APPLIANCE_CONFIG", "/etc/acme-appliance/appli
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s deploy_to_panos %(levelname)s %(message)s",
-    filename="/var/log/acme-appliance.log",
+    filename=os.environ.get("ACME_APPLIANCE_LOG", "/var/log/acme-appliance.log"),
 )
 log = logging.getLogger("deploy_to_panos")
 
@@ -43,11 +43,6 @@ def load_config():
 
 
 def find_domain_config(cfg, domain: str):
-    """
-    Find the domains[] entry that owns `domain`, matching on either the
-    entry's primary `name` or any of its `additional_names` (SAN certs --
-    e.g. a wildcard "*.example.com" entry that also lists "example.com").
-    """
     for entry in cfg["domains"]:
         if entry["name"] == domain:
             return entry
@@ -61,7 +56,8 @@ def main():
     renewed_domains = os.environ.get("RENEWED_DOMAINS", "")
     if not lineage or not renewed_domains:
         raise SystemExit(
-            "RENEWED_LINEAGE / RENEWED_DOMAINS not set - run via certbot --deploy-hook"
+            "RENEWED_LINEAGE / RENEWED_DOMAINS not set - run via certbot --deploy-hook "
+            "or bin/redeploy-cert.sh"
         )
 
     cfg = load_config()
@@ -69,10 +65,6 @@ def main():
     key_path = os.path.join(lineage, "privkey.pem")
     stamp = datetime.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
 
-    # A SAN certificate (e.g. wildcard + apex) reports multiple names in
-    # RENEWED_DOMAINS, all belonging to the same domains[] entry -- track
-    # which entries we've already deployed this run so we don't import/
-    # commit the same certificate to the same firewall more than once.
     processed_entry_names = set()
     matched_any = False
 
@@ -110,7 +102,7 @@ def main():
                         target["globalprotect_portal"], cert_name
                     )
 
-                client.commit(description=f"ACME appliance: renew {domain_cfg['name']}")
+                client.commit(description=f"ACME appliance: deploy {domain_cfg['name']}")
 
                 if fw_cfg.get("cleanup_old_certs"):
                     client.cleanup_old_certificates(
@@ -125,8 +117,6 @@ def main():
                     "Failed deploying %s to firewall %s: %s",
                     cert_name, target["firewall"], exc,
                 )
-                # Continue on to remaining targets/firewalls rather than
-                # aborting the whole run over one failed device.
                 continue
 
     if not matched_any:

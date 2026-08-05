@@ -17,6 +17,27 @@
     <input type="hidden" name="force" value="on">
     <button type="submit" class="btn btn-secondary">Force renew now</button>
   </form>
+
+  {% if has_cert %}
+    <h2>Redeploy existing certificate</h2>
+    <p class="helptext">
+      Re-imports the certificate that's <strong>already issued and on disk</strong> to this
+      domain's configured firewall target(s) and commits -- without requesting a new
+      certificate from Let's Encrypt at all. Use this after fixing a firewall-side issue
+      (wrong SSL/TLS profile name, missing firewall target, etc.) instead of "Force renew
+      now", since it doesn't touch your Let's Encrypt rate-limit headroom.
+    </p>
+    {% if redeploy_in_progress %}
+      <span class="badge" style="border-color:#d8a531;color:#d8a531;">Redeploying&hellip;</span>
+    {% else %}
+      <form method="post" action="{{ url_for('domain_redeploy', name=entry.name) }}"
+            onsubmit="return confirm('Redeploy the existing certificate for {{ entry.name }} to its firewall target(s)? This re-imports it and commits -- no new certificate is issued.');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="btn btn-secondary">Redeploy to firewall</button>
+      </form>
+    {% endif %}
+  {% endif %}
+
   <p style="margin-top:10px;"><a href="{{ url_for('logs') }}">View log &rarr;</a></p>
 </div>
 {% endif %}

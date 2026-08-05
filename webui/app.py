@@ -2,9 +2,9 @@
 """
 Simple web frontend for configuring the ACME / Palo Alto appliance:
 DNS provider instances, target firewalls, and the domains that tie them
-together -- plus a log viewer, on-demand renewal triggers, an SSL/TLS
-profile picker, certificate export, ACME account settings, and OS update
-checking/applying.
+together -- plus a log viewer, on-demand renewal triggers, a "redeploy
+existing certificate" action, an SSL/TLS profile picker, certificate
+export, ACME account settings, and OS update checking/applying.
 """
 
 import io
@@ -42,9 +42,6 @@ SECRET_KEY_PATH = os.environ.get(
     "ACME_APPLIANCE_SECRET_KEY_FILE", "/etc/acme-appliance/webui_secret_key"
 )
 
-# Domains ACME servers explicitly reject for account registration -- used
-# to give an immediate, clear error on the Settings form instead of
-# letting the user find out only when the next renewal fails.
 PLACEHOLDER_EMAIL_DOMAINS = {
     "example.com", "example.org", "example.net", "example.edu",
     "test.com", "localhost", "invalid",
@@ -123,6 +120,17 @@ def _appliance_log(message: str) -> None:
         pass
 
 
+# ------------------------------------------------- background job locking
+#
+# Three kinds of background job can run against a domain:
+#   - "all domains" renewal (renew-ALL.lock)
+#   - a single domain's renewal (renew-<domain>.lock)
+#   - a single domain's redeploy-existing-cert action (redeploy-<domain>.lock)
+# A given domain is considered "busy" if ANY of the above touching it is
+# active, since renewal and redeploy both ultimately import a certificate
+# and commit on the same firewall target(s) -- letting two such jobs run
+# concurrently for the same domain risks racing/conflicting PAN-OS commits.
+
 def _safe_lock_name(domain: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", domain)
 
@@ -133,15 +141,22 @@ def _lock_path(domain=None) -> str:
     return os.path.join(RENEW_LOCK_DIR, name)
 
 
+def _redeploy_lock_path(domain: str) -> str:
+    os.makedirs(RENEW_LOCK_DIR, exist_ok=True)
+    return os.path.join(RENEW_LOCK_DIR, f"redeploy-{_safe_lock_name(domain)}.lock")
+
+
 def _active_lock_labels() -> list:
     if not os.path.isdir(RENEW_LOCK_DIR):
         return []
     labels = []
     for fname in sorted(os.listdir(RENEW_LOCK_DIR)):
         if fname == "renew-ALL.lock":
-            labels.append("All domains")
+            labels.append("All domains (renew)")
         elif fname.startswith("renew-") and fname.endswith(".lock"):
-            labels.append(fname[len("renew-"):-len(".lock")])
+            labels.append(fname[len("renew-"):-len(".lock")] + " (renew)")
+        elif fname.startswith("redeploy-") and fname.endswith(".lock"):
+            labels.append(fname[len("redeploy-"):-len(".lock")] + " (redeploy)")
     return labels
 
 
@@ -153,8 +168,18 @@ def _renewal_in_progress(domain=None) -> bool:
     return False
 
 
-def _start_renewal(lock_path: str, args: list) -> None:
-    script = os.path.join(APPLIANCE_DIR, "bin", "acme-renew.sh")
+def _redeploy_in_progress(domain: str) -> bool:
+    return os.path.exists(_redeploy_lock_path(domain))
+
+
+def _domain_busy(domain: str) -> bool:
+    """True if a renewal (for this domain or all domains) or a redeploy
+    for this domain is already running."""
+    return _renewal_in_progress(domain) or _redeploy_in_progress(domain)
+
+
+def _start_background(lock_path: str, script_name: str, args: list) -> None:
+    script = os.path.join(APPLIANCE_DIR, "bin", script_name)
     quoted_cmd = " ".join(shlex.quote(a) for a in [script] + args)
     with open(lock_path, "w") as f:
         f.write(str(os.getpid()))
@@ -249,8 +274,6 @@ def dashboard():
     )
 
 
-# --------------------------------------------------------------- settings
-
 @app.route("/settings", methods=["GET", "POST"])
 @login_required
 def settings_page():
@@ -310,17 +333,14 @@ def settings_page():
 @login_required
 def renew_now():
     check_csrf()
-    if _renewal_in_progress():
-        flash("A renewal run already appears to be in progress.", "error")
-        return redirect(url_for("logs"))
     if _active_lock_labels():
         flash(
-            "One or more single-domain renewals are currently running; "
+            "One or more renewals or redeploys are currently running; "
             "wait for them to finish before renewing all domains.", "error",
         )
         return redirect(url_for("logs"))
     try:
-        _start_renewal(_lock_path(None), [])
+        _start_background(_lock_path(None), "acme-renew.sh", [])
         flash(
             "Renewal started for all domains in the background. "
             "Refresh the log below to follow progress.", "success",
@@ -337,13 +357,13 @@ def domain_renew(name):
     cfg = store.load_config()
     if not store.get_domain(cfg, name):
         abort(404)
-    if _renewal_in_progress(name):
-        flash(f"A renewal run is already in progress for '{name}' (or for all domains).", "error")
+    if _domain_busy(name):
+        flash(f"A renewal or redeploy is already in progress for '{name}' (or for all domains).", "error")
         return redirect(url_for("logs"))
     force = request.form.get("force") == "on"
     try:
         args = [name] + (["--force"] if force else [])
-        _start_renewal(_lock_path(name), args)
+        _start_background(_lock_path(name), "acme-renew.sh", args)
         suffix = " (forcing renewal outside the normal 30-day window)" if force else ""
         flash(
             f"Renewal started for '{name}' in the background{suffix}. "
@@ -351,6 +371,44 @@ def domain_renew(name):
         )
     except Exception as exc:  # noqa: BLE001
         flash(f"Could not start renewal for '{name}': {exc}", "error")
+    return redirect(url_for("logs"))
+
+
+@app.route("/domains/<path:name>/redeploy", methods=["POST"])
+@login_required
+def domain_redeploy(name):
+    """
+    Re-runs just the PAN-OS import/attach/commit steps for a certificate
+    that's already been issued -- no new ACME issuance, no DNS-01
+    challenge, and no Let's Encrypt rate-limit usage at all. Useful when
+    the certificate itself is fine but the firewall-side deployment
+    needs to be redone (e.g. after fixing an SSL/TLS profile name or
+    firewall target, or after this appliance's own PAN-OS import bug was
+    fixed and an old certificate never actually made it onto the
+    firewall with its private key attached).
+    """
+    check_csrf()
+    cfg = store.load_config()
+    if not store.get_domain(cfg, name):
+        abort(404)
+    if not _cert_lineage_dir(name):
+        flash(
+            f"No certificate has been issued yet for '{name}' -- nothing to redeploy. "
+            "Use 'Renew now' first.", "error",
+        )
+        return redirect(url_for("domains_list"))
+    if _domain_busy(name):
+        flash(f"A renewal or redeploy is already in progress for '{name}' (or for all domains).", "error")
+        return redirect(url_for("logs"))
+    try:
+        _start_background(_redeploy_lock_path(name), "redeploy-cert.sh", [name])
+        flash(
+            f"Redeploy started for '{name}' in the background -- re-importing the existing "
+            "certificate and committing it to the configured firewall target(s). No new "
+            "ACME issuance is performed. Refresh the log below to follow progress.", "success",
+        )
+    except Exception as exc:  # noqa: BLE001
+        flash(f"Could not start redeploy for '{name}': {exc}", "error")
     return redirect(url_for("logs"))
 
 
@@ -380,6 +438,7 @@ def domains_list():
             "entry": d,
             "cert_expiry": _cert_expiry(d["name"]),
             "renewal_in_progress": _renewal_in_progress(d["name"]),
+            "redeploy_in_progress": _redeploy_in_progress(d["name"]),
             "has_cert": _cert_lineage_dir(d["name"]) is not None,
         })
     return render_template("domains.html", rows=rows, any_renewal_in_progress=bool(_active_lock_labels()))
@@ -457,7 +516,7 @@ def domain_new():
             flash(f"Added domain {name}.", "success")
             return redirect(url_for("domains_list"))
     return render_template(
-        "domain_form.html", mode="new", entry=None,
+        "domain_form.html", mode="new", entry=None, has_cert=False, redeploy_in_progress=False,
         providers=cfg["dns_providers"], firewalls=cfg["panos_firewalls"],
     )
 
@@ -482,6 +541,8 @@ def domain_edit(name):
             return redirect(url_for("domains_list"))
     return render_template(
         "domain_form.html", mode="edit", entry=entry,
+        has_cert=_cert_lineage_dir(name) is not None,
+        redeploy_in_progress=_redeploy_in_progress(name),
         providers=cfg["dns_providers"], firewalls=cfg["panos_firewalls"],
     )
 
