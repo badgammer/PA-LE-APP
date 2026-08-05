@@ -43,7 +43,21 @@ class AzureDnsProvider(BaseDnsProvider):
 
     def _record_url(self, fqdn: str) -> str:
         zone = self.settings["zone"]
-        if not fqdn.endswith(zone):
+        # DNS names are case-insensitive (RFC 1035/4343). certbot normalizes
+        # the domain names it passes to hooks to lowercase, but the `zone`
+        # value here is whatever the operator typed into the web UI/YAML --
+        # often copy-pasted straight from the Azure portal, which displays
+        # zone names in whatever case they were created with (e.g.
+        # "HowardsCams.com"). A plain str.endswith() is case-SENSITIVE, so
+        # "_acme-challenge.vpn.howardscams.com".endswith("HowardsCams.com")
+        # is False even though they refer to the same zone -- which made
+        # every renewal for a mixed-case zone fail with a confusing
+        # "not under configured zone" error. Compare case-insensitively,
+        # but keep using the operator's original `zone` string (not the
+        # lowercased copy) when building the actual Azure resource URL
+        # below, since that must match the exact resource name Azure
+        # assigned when the zone was created.
+        if not fqdn.lower().endswith(zone.lower()):
             raise DnsProviderError(f"{fqdn} is not under configured zone {zone}")
         relative_name = fqdn[: -(len(zone) + 1)] or "@"
         sub = self.settings["subscription_id"]
@@ -55,15 +69,6 @@ class AzureDnsProvider(BaseDnsProvider):
         )
 
     def _get_existing_txt_entries(self, fqdn: str) -> list:
-        """
-        Return the current list of TXTRecords entries (each like
-        {"value": ["some-string"]}) at fqdn, or [] if the record doesn't
-        exist yet. Needed so add/remove can merge instead of clobber --
-        important when a wildcard cert (e.g. "*.example.com") and its
-        apex ("example.com") are requested together, since both ACME
-        challenges land on the same "_acme-challenge.example.com" name
-        and each needs its own distinct TXT value present at the same time.
-        """
         headers = {"Authorization": f"Bearer {self._get_token()}"}
         r = requests.get(self._record_url(fqdn), headers=headers, timeout=15)
         if r.status_code == 404:
@@ -75,7 +80,7 @@ class AzureDnsProvider(BaseDnsProvider):
     def add_txt_record(self, fqdn: str, value: str) -> None:
         existing = self._get_existing_txt_entries(fqdn)
         if any(entry.get("value") == [value] for entry in existing):
-            return  # already present -- nothing to do (idempotent)
+            return
         merged = existing + [{"value": [value]}]
         headers = {
             "Authorization": f"Bearer {self._get_token()}",
@@ -91,15 +96,10 @@ class AzureDnsProvider(BaseDnsProvider):
         remaining = [entry for entry in existing if entry.get("value") != [value]]
         headers = {"Authorization": f"Bearer {self._get_token()}"}
         if not remaining:
-            # No other challenge values left at this name -- delete the
-            # record entirely (matches prior behavior for the common
-            # single-domain case).
             r = requests.delete(self._record_url(fqdn), headers=headers, timeout=15)
             if r.status_code not in (200, 204, 404):
                 raise DnsProviderError(f"Azure remove_txt_record failed: {r.text}")
             return
-        # Other challenge value(s) still need to exist (e.g. the sibling
-        # apex/wildcard challenge) -- rewrite with just this value removed.
         headers["Content-Type"] = "application/json"
         body = {"properties": {"TTL": 120, "TXTRecords": remaining}}
         r = requests.put(self._record_url(fqdn), headers=headers, json=body, timeout=15)
