@@ -238,7 +238,7 @@ type a new value.
 ### Getting a Palo Alto API key
 
 ```bash
-curl -sk "https://<firewall-mgmt-ip>/api/?type=keygen&user=<admin-user>&password=<password>"
+curl -k -X GET "https://<firewall-mgmt-ip>/api/?type=keygen&user=<admin-user>&password=<password>"
 ```
 Prefer a dedicated API-only admin account. See the permissions note above
 -- Configuration + Import + Commit + Operational Requests, all four.
