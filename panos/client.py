@@ -2,6 +2,16 @@
 Thin PAN-OS XML/REST API client used to deploy an ACME-issued certificate
 to one or more Palo Alto firewalls and point the GlobalProtect portal (and
 optionally the gateway) SSL/TLS Service Profile at it.
+
+Required PAN-OS admin role permissions for the account used here (Device
+> Admin Roles > <role> > XML API tab):
+    - Configuration        (get/set profile, list/delete certificates)
+    - Import               (upload the certificate + key)
+    - Commit                (commit the change)
+    - Operational Requests  (system_info / the web UI's "Test Connection")
+All four should be enabled; a role with only some of them will produce
+confusing partial failures (e.g. "Test Connection" fails while deploys
+still work, or vice versa).
 """
 
 import logging
@@ -62,10 +72,27 @@ class PanosClient:
         import xml.etree.ElementTree as ET
         root = ET.fromstring(xml_text)
         if root.attrib.get("status") != "success":
-            raise PanosError(f"{context} failed: {xml_text}")
+            msg = xml_text
+            lowered = xml_text.lower()
+            if "not authorized" in lowered or "permission" in lowered or "unauthorized" in lowered:
+                msg += (
+                    "\nHint: this usually means the admin role assigned to this API "
+                    "account is missing a required XML API permission. Check Device > "
+                    "Admin Roles > <role> > XML API tab and make sure Configuration, "
+                    "Import, Commit, and Operational Requests are all enabled."
+                )
+            raise PanosError(f"{context} failed: {msg}")
         return root
 
     def system_info(self) -> dict:
+        """
+        Used by the web UI's "Test Connection" button. This is an
+        Operational Requests (type=op) call -- if the admin role assigned
+        to this account doesn't have "Operational Requests" enabled under
+        Device > Admin Roles > <role> > XML API, this call fails even
+        though Configuration-only actions (like importing a certificate)
+        might still succeed.
+        """
         text = self._get({"type": "op", "cmd": "<show><system><info></info></system></show>"})
         root = self._check_success(text, "system_info")
         info = root.find(".//system")
@@ -137,10 +164,6 @@ class PanosClient:
         on the firewall. Used by the web UI to let you pick a real,
         already-existing profile from a list instead of typing its name
         by hand (and risking a typo that silently fails to apply).
-
-        Checks both the shared location and (if given) a specific vsys,
-        since profiles can live in either depending on how the firewall
-        is configured, and returns the union with duplicates removed.
         """
         import xml.etree.ElementTree as ET
         names = []
@@ -159,12 +182,9 @@ class PanosClient:
                 f"/config/devices/entry/vsys/entry[@name='{vsys}']/ssl-tls-service-profile"
             ))
         else:
-            # No vsys specified -- also check the default "vsys1", the
-            # common case for firewalls not using multi-vsys.
             names.extend(_fetch(
                 "/config/devices/entry/vsys/entry[@name='vsys1']/ssl-tls-service-profile"
             ))
-        # De-duplicate while preserving order.
         seen = set()
         unique = []
         for n in names:

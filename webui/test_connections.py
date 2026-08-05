@@ -4,7 +4,6 @@ panos.PanosClient(...) helper calls for the web UI's "Test Connection"
 buttons and the SSL/TLS profile picker, normalizing results into
 (ok: bool, message-or-data) tuples.
 """
-
 import os
 import sys
 
@@ -31,14 +30,23 @@ def test_dns_provider(provider_type: str, settings: dict):
         message = provider.test_connection()
         return True, message
     except NotImplementedError as exc:
-        return None, str(exc)  # "not applicable" rather than pass/fail
+        return None, str(exc)
     except DnsProviderError as exc:
         return False, str(exc)
-    except Exception as exc:  # noqa: BLE001 - always show *something* useful in the UI
+    except Exception as exc:  # noqa: BLE001
         return False, f"Unexpected error: {exc}"
 
 
 def test_panos_firewall(fw_settings: dict):
+    """
+    Note: this calls PanosClient.system_info(), which is an "Operational
+    Requests" XML API call. If the admin role assigned to this firewall's
+    API account only has "Configuration"/"Import"/"Commit" enabled (the
+    minimum for actual cert deployment) but not "Operational Requests",
+    this test will fail even though real renewals/deployments would
+    still succeed -- PanosClient surfaces a hint about this in the error
+    message when it looks like a permissions problem.
+    """
     try:
         client = _make_client(fw_settings)
         info = client.system_info()
@@ -56,9 +64,7 @@ def test_panos_firewall(fw_settings: dict):
 def list_ssl_profiles(fw_settings: dict, vsys: str = None):
     """
     Returns (True, [profile_names...]) on success, or (False, error_message)
-    on failure. Used by the domain form's "Fetch profiles" button so you
-    can pick a real, already-configured SSL/TLS Service Profile name from
-    the target firewall instead of typing it by hand.
+    on failure. Used by the domain form's "Fetch profiles" button.
     """
     try:
         client = _make_client(fw_settings)

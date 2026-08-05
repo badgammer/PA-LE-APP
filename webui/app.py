@@ -34,7 +34,13 @@ from cert_naming import safe_cert_name  # noqa: E402
 APPLIANCE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG_PATH = os.environ.get("ACME_APPLIANCE_LOG", "/var/log/acme-appliance.log")
 RENEW_LOCK_DIR = os.environ.get("ACME_APPLIANCE_RENEW_LOCK_DIR", "/var/run/acme-appliance")
-LETSENCRYPT_LIVE_DIR = os.environ.get("ACME_APPLIANCE_LE_LIVE_DIR", "/etc/letsencrypt/live")
+# Must match bin/acme-renew.sh's ACME_APPLIANCE_LE_CONFIG_DIR + "/live" --
+# certbot is pointed at an appliance-owned config dir (NOT the usual
+# /etc/letsencrypt) since it runs as an unprivileged service account. See
+# the comment at the top of bin/acme-renew.sh for the full rationale.
+LETSENCRYPT_LIVE_DIR = os.environ.get(
+    "ACME_APPLIANCE_LE_LIVE_DIR", "/etc/acme-appliance/letsencrypt/live"
+)
 SECRET_KEY_PATH = os.environ.get(
     "ACME_APPLIANCE_SECRET_KEY_FILE", "/etc/acme-appliance/webui_secret_key"
 )
@@ -325,11 +331,11 @@ def domains_list():
 
 def _cert_lineage_dir(domain_name: str):
     """
-    Return the /etc/letsencrypt/live/<...>/ directory for this domain
+    Return the <letsencrypt-live-dir>/<...>/ directory for this domain
     entry, or None if no certificate has been issued yet. Tries the
-    "safe" name first (what acme-renew.sh now explicitly passes via
-    --cert-name -- see cert_naming.py), then falls back to the raw domain
-    name for certs issued before this naming scheme existed.
+    "safe" name first (what acme-renew.sh passes via --cert-name -- see
+    cert_naming.py), then falls back to the raw domain name for certs
+    issued before this naming scheme existed.
     """
     for candidate in (safe_cert_name(domain_name), domain_name):
         path = os.path.join(LETSENCRYPT_LIVE_DIR, candidate)
@@ -383,8 +389,6 @@ def domain_download(name):
                 included.append(fname)
     buf.seek(0)
 
-    # Downloading a private key is worth a record in the shared log --
-    # doesn't block the download, just gives you an audit trail.
     _appliance_log(
         f"user '{current_user()}' downloaded certificate files for '{name}' "
         f"({', '.join(included)}) from {request.remote_addr}"

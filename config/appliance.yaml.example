@@ -47,6 +47,15 @@ dns_providers:
       auth_header: "Bearer CHANGE-ME"
 
 # One entry per Palo Alto firewall the appliance is allowed to update.
+# IMPORTANT: the admin account (or the account behind the API key) must
+# use a custom Admin Role with ALL FOUR of these enabled under
+# Device > Admin Roles > <role> > XML API tab:
+#   - Configuration          (get/set SSL/TLS profile, list/delete certs)
+#   - Import                 (upload the certificate + key)
+#   - Commit                  (commit the change)
+#   - Operational Requests    (needed only for the web UI's "Test connection"
+#                              button -- deployment itself works without it,
+#                              but Test connection will fail without it)
 panos_firewalls:
   hq-firewall:
     hostname: "10.10.10.1"
@@ -87,10 +96,7 @@ domains:
 
   # Example wildcard certificate. Combining a wildcard with its bare apex
   # domain on ONE certificate (common, since it covers "anything.example.com"
-  # plus "example.com" itself) is done via `additional_names`. Both names
-  # are issued together as SANs on a single cert and deployed together to
-  # every listed target -- handy if you want one cert usable across
-  # several services beyond just the GlobalProtect portal.
+  # plus "example.com" itself) is done via `additional_names`.
   - name: "*.example.com"
     additional_names:
       - "example.com"

@@ -10,7 +10,16 @@
     <label for="hostname">Management hostname or IP</label>
     <input type="text" id="hostname" name="hostname" required value="{{ settings.get('hostname', '') }}">
     <h2>Authentication</h2>
-    <p class="helptext">Prefer a long-lived API key. Only fill in one method -- API key takes priority if both are present.</p>
+    <p class="helptext">
+      Prefer a long-lived API key. Only fill in one method -- API key takes priority if both are present.
+    </p>
+    <p class="helptext">
+      <strong>Required admin role permissions</strong> (Device &gt; Admin Roles &gt; &lt;role&gt; &gt; XML API tab):
+      Configuration, Import, and Commit are needed to deploy certificates; <strong>Operational Requests</strong>
+      is additionally needed for the "Test connection" button below (it calls a `show system info` operational
+      command). A role missing Operational Requests can still deploy certificates successfully even though
+      "Test connection" fails -- that's expected, not a sign anything else is broken.
+    </p>
     <label for="api_key">API key</label>
     <input type="password" id="api_key" name="api_key"
            placeholder="{{ '(unchanged - leave blank to keep current value)' if mode == 'edit' and settings.get('api_key') else 'Enter API key' }}">
