@@ -81,6 +81,18 @@ class PanosClient:
                     "Admin Roles > <role> > XML API tab and make sure Configuration, "
                     "Import, Commit, and Operational Requests are all enabled."
                 )
+            elif "override" in lowered and "template" in lowered:
+                msg += (
+                    "\nHint: this firewall is Panorama-managed and the object being "
+                    "modified (e.g. the SSL/TLS Service Profile) is defined in a "
+                    "Panorama-pushed template, which blocks direct local edits until "
+                    "it's overridden. Either (a) SSH to the firewall and run "
+                    "'configure' / 'override network ssl-tls-service-profile "
+                    "<profile-name>' / 'set ...' / 'commit' once to create a local "
+                    "override this appliance can then update on future renewals, or "
+                    "(b) manage this certificate assignment from Panorama itself "
+                    "instead of the local firewall API."
+                )
             raise PanosError(f"{context} failed: {msg}")
         return root
 
@@ -100,39 +112,17 @@ class PanosClient:
                             passphrase: str = None) -> None:
         """
         Imports a certificate AND its private key together onto the
-        firewall as a PAN-OS "keypair" object.
-
-        IMPORTANT -- this is NOT the same as PAN-OS's category=certificate
-        import path, which uploads ONLY the public certificate. There is
-        no private key involved in that request at all; a "keyfile"
-        multipart field is not part of that API and is silently ignored
-        if you include one. To get a certificate onto the firewall WITH
-        its private key (required for anything that presents the cert
-        over TLS -- an SSL/TLS Service Profile, or the GlobalProtect
-        portal's own certificate field), you must use category=keypair
-        instead. That API expects a SINGLE PEM file containing BOTH the
-        certificate and the private key concatenated together in one
-        multipart "file" field -- not two separate files/fields.
-
-        Symptom if this isn't done correctly: the certificate object
-        exists on the firewall and looks fine -- import "succeeds",
-        "Test Connection" is unaffected -- but assigning it to an SSL/TLS
-        Service Profile and committing fails PAN-OS's pre-commit
-        validation ("a certificate used by an SSL/TLS profile must have
-        a private key"). Because that validation failure happens BEFORE
-        a commit job is even created, no job appears in the firewall's
-        Task Manager at all -- which looks exactly like "the firewall
-        never even attempted to commit," rather than "the commit failed."
+        firewall as a PAN-OS "keypair" object (category=keypair), which
+        requires a SINGLE PEM file containing both the certificate and
+        the private key concatenated together in one multipart "file"
+        field. category=certificate (the old, broken approach here)
+        imports ONLY the public certificate with no private key at all.
 
         passphrase: PAN-OS's keypair import API requires this parameter
-        to be present (non-empty) on every keypair import call, but it
-        is only actually USED to decrypt the private key if that key's
-        PEM content itself indicates it's encrypted (e.g. "-----BEGIN
-        ENCRYPTED PRIVATE KEY-----" / a "Proc-Type: 4,ENCRYPTED"
-        header). certbot's default private keys are NOT encrypted, so if
-        you don't supply a real passphrase, a fixed placeholder value is
-        sent purely to satisfy the API's "must be present" requirement --
-        it has no effect on an unencrypted key.
+        to be present (non-empty) on every call, but it's only actually
+        used to decrypt the private key if that key's PEM content
+        indicates it's encrypted. certbot's default keys are not
+        encrypted, so an inert placeholder is sent when none is given.
         """
         with open(cert_path, "rb") as cert_f:
             cert_bytes = cert_f.read()
@@ -147,8 +137,6 @@ class PanosClient:
         params = {
             "type": "import", "category": "keypair",
             "certificate-name": cert_name, "format": "pem",
-            # Always present (see docstring) -- use the real passphrase if
-            # the key is actually encrypted, otherwise an inert placeholder.
             "passphrase": passphrase or "unused-key-is-not-encrypted",
         }
         files = {"file": (f"{cert_name}.pem", combined)}
