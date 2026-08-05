@@ -12,6 +12,7 @@ Environment=ACME_APPLIANCE_CONFIG=/etc/acme-appliance/appliance.yaml
 Environment=ACME_APPLIANCE_USERS=/etc/acme-appliance/users.yaml
 Environment=ACME_APPLIANCE_SECRET_KEY_FILE=/etc/acme-appliance/webui_secret_key
 Environment=ACME_APPLIANCE_LOG=/var/log/acme-appliance.log
+Environment=ACME_APPLIANCE_RUN_DIR=/var/run/acme-appliance
 ExecStart=/opt/acme-appliance/venv/bin/gunicorn \
     --bind 0.0.0.0:8443 \
     --certfile /etc/acme-appliance/webui-tls/webui.crt \
@@ -24,16 +25,32 @@ RestartSec=5
 
 # IMPORTANT: when the "Run renewal now" / per-domain "Renew now" buttons
 # trigger bin/acme-renew.sh, that script (and the certbot process it
-# spawns) runs as a CHILD of this service and therefore inherits THIS
-# unit's sandboxing, not acme-renew.service's. certbot needs write access
-# to its appliance-owned config/work/logs directories (see the comment in
-# bin/acme-renew.sh) -- /var/lib/acme-appliance must be listed here too,
-# or web-UI-triggered renewals fail before certbot can even create its
-# own log file, while the separate daily-timer path (acme-renew.service)
-# appears to work fine, which is a very confusing failure mode to debug.
+# spawns) runs as a CHILD of this service and inherits its sandboxing,
+# not acme-renew.service's. certbot needs write access to its
+# appliance-owned config/work/logs directories (see bin/acme-renew.sh).
+#
+# ADDITIONALLY (System Updates feature): NoNewPrivileges is intentionally
+# NOT set here, unlike the other units in this appliance. Two things this
+# service does specifically require the ability to gain new privileges:
+#   1. PAM authentication of the Linux "sudo user" credential step-up
+#      check (webui/system_updates.py) -- pam_unix internally invokes
+#      /usr/sbin/unix_chkpwd, a setuid-root helper, to check the password
+#      against /etc/shadow. NoNewPrivileges blocks exec of setuid
+#      binaries from gaining privilege, which would make ALL PAM auth
+#      attempts fail here, not just malicious ones.
+#   2. Starting the two purpose-built root-owned systemd units used for
+#      checking/applying OS updates (acme-appliance-check-updates.service,
+#      acme-appliance-updates.service) via a narrowly-scoped sudoers rule
+#      (see iso-build/sudoers.d/acme-appliance-updates) -- invoking sudo
+#      at all requires exec'ing a setuid-root binary, which is likewise
+#      blocked by NoNewPrivileges regardless of how narrow the sudoers
+#      rule is.
+# This is a deliberate, narrow trade-off: this service can ONLY escalate
+# via that one specific sudoers rule (4 exact systemctl invocations) and
+# PAM (identity verification only, not itself privilege escalation for
+# any other action) -- it still cannot run arbitrary commands as root.
 ProtectSystem=strict
 ReadWritePaths=/var/log /etc/acme-appliance /var/run /var/lib/acme-appliance
-NoNewPrivileges=true
 PrivateTmp=true
 
 [Install]

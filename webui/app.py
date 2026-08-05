@@ -2,9 +2,8 @@
 """
 Simple web frontend for configuring the ACME / Palo Alto appliance:
 DNS provider instances, target firewalls, and the domains that tie them
-together -- plus a log viewer, on-demand renewal triggers (all domains or
-a single domain), an SSL/TLS profile picker fed from the live firewall,
-and a certificate export/download action.
+together -- plus a log viewer, on-demand renewal triggers, an SSL/TLS
+profile picker, certificate export, and OS update checking/applying.
 """
 
 import io
@@ -28,16 +27,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import auth  # noqa: E402
 import config_store as store  # noqa: E402
 import test_connections  # noqa: E402
+import system_updates  # noqa: E402
 from dns_providers import PROVIDER_FIELDS  # noqa: E402
 from cert_naming import safe_cert_name  # noqa: E402
 
 APPLIANCE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG_PATH = os.environ.get("ACME_APPLIANCE_LOG", "/var/log/acme-appliance.log")
 RENEW_LOCK_DIR = os.environ.get("ACME_APPLIANCE_RENEW_LOCK_DIR", "/var/run/acme-appliance")
-# Must match bin/acme-renew.sh's ACME_APPLIANCE_LE_CONFIG_DIR + "/live" --
-# certbot is pointed at an appliance-owned config dir (NOT the usual
-# /etc/letsencrypt) since it runs as an unprivileged service account. See
-# the comment at the top of bin/acme-renew.sh for the full rationale.
 LETSENCRYPT_LIVE_DIR = os.environ.get(
     "ACME_APPLIANCE_LE_LIVE_DIR", "/etc/acme-appliance/letsencrypt/live"
 )
@@ -107,9 +103,6 @@ def mask(value: str) -> str:
 
 
 def _appliance_log(message: str) -> None:
-    """Append a line to the shared appliance log in the same format the
-    backend scripts use, so security-relevant web UI actions (like
-    downloading a private key) show up in one place alongside renewals."""
     try:
         with open(LOG_PATH, "a") as f:
             stamp = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -330,13 +323,6 @@ def domains_list():
 
 
 def _cert_lineage_dir(domain_name: str):
-    """
-    Return the <letsencrypt-live-dir>/<...>/ directory for this domain
-    entry, or None if no certificate has been issued yet. Tries the
-    "safe" name first (what acme-renew.sh passes via --cert-name -- see
-    cert_naming.py), then falls back to the raw domain name for certs
-    issued before this naming scheme existed.
-    """
     for candidate in (safe_cert_name(domain_name), domain_name):
         path = os.path.join(LETSENCRYPT_LIVE_DIR, candidate)
         if os.path.isdir(path):
@@ -364,13 +350,6 @@ def _cert_expiry(domain_name: str):
 @app.route("/domains/<path:name>/download")
 @login_required
 def domain_download(name):
-    """
-    Bundles the issued certificate files (fullchain.pem, cert.pem,
-    chain.pem, privkey.pem -- whichever exist) into a zip for download.
-    Useful when a certificate (e.g. a wildcard) needs to be reused
-    somewhere other than the Palo Alto GlobalProtect deployment this
-    appliance automates.
-    """
     cfg = store.load_config()
     if not store.get_domain(cfg, name):
         abort(404)
@@ -505,12 +484,6 @@ def _domain_from_form(cfg):
 @app.route("/firewalls/<name>/ssl-profiles")
 @login_required
 def firewall_ssl_profiles(name):
-    """
-    AJAX endpoint used by the domain form's "Fetch profiles" button.
-    Returns the SSL/TLS Service Profile names currently configured on
-    the given firewall, so you can pick a real, existing profile instead
-    of typing its name by hand.
-    """
     cfg = store.load_config()
     fw_settings = cfg["panos_firewalls"].get(name)
     if fw_settings is None:
@@ -731,6 +704,67 @@ def _firewall_settings_from_form(existing: dict) -> dict:
         settings["password"] = password
         settings.pop("api_key", None)
     return settings
+
+
+# ------------------------------------------------------------ system updates
+
+@app.route("/system")
+@login_required
+def system_page():
+    return render_template(
+        "system.html",
+        check_status=system_updates.get_check_status(),
+        apply_status=system_updates.get_last_apply_status(),
+        check_in_progress=system_updates.is_check_in_progress(),
+        update_in_progress=system_updates.is_update_in_progress(),
+        sudo_group=system_updates.SUDO_GROUP,
+    )
+
+
+@app.route("/system/check", methods=["POST"])
+@login_required
+def system_check():
+    check_csrf()
+    ok, message = system_updates.trigger_check()
+    flash(message, "success" if ok else "error")
+    return redirect(url_for("system_page"))
+
+
+@app.route("/system/apply", methods=["POST"])
+@login_required
+def system_apply():
+    check_csrf()
+    username = request.form.get("sudo_username", "")
+    password = request.form.get("sudo_password", "")
+    try:
+        ok, message = system_updates.trigger_apply_update(username, password)
+        flash(message, "success" if ok else "error")
+    except system_updates.StepUpAuthError as exc:
+        flash(str(exc), "error")
+    finally:
+        # Best-effort: drop local references to the submitted credential
+        # as soon as we're done with this request. Flask/Werkzeug may
+        # still hold the raw form data for the duration of the request
+        # object's lifetime, but we avoid keeping any of our own copies
+        # around longer than necessary.
+        password = None  # noqa: F841
+    return redirect(url_for("system_page"))
+
+
+@app.route("/system/reboot", methods=["POST"])
+@login_required
+def system_reboot():
+    check_csrf()
+    username = request.form.get("sudo_username", "")
+    password = request.form.get("sudo_password", "")
+    try:
+        ok, message = system_updates.trigger_reboot(username, password)
+        flash(message, "success" if ok else "error")
+    except system_updates.StepUpAuthError as exc:
+        flash(str(exc), "error")
+    finally:
+        password = None  # noqa: F841
+    return redirect(url_for("system_page"))
 
 
 # --------------------------------------------------------------- account

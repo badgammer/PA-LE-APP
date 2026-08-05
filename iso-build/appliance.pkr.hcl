@@ -2,18 +2,11 @@
 # image headlessly, using the same ks.cfg as build-iso.sh.
 #
 # Requirements (on your OWN build machine):
-#   - Packer >= 1.9:        https://developer.hashicorp.com/packer/install
-#   - QEMU/KVM:             sudo dnf install -y qemu-kvm
-#   - packer-plugin-qemu:   packer plugins install github.com/hashicorp/qemu
+#   - Packer >= 1.9, QEMU/KVM, packer-plugin-qemu
 #
 # Usage:
 #   packer init appliance.pkr.hcl
-#   packer build \
-#     -var 'iso_url=/path/to/Rocky-9-x86_64-minimal.iso' \
-#     -var 'iso_checksum=sha256:xxxxxxxx...' \
-#     appliance.pkr.hcl
-#
-# Output: output-acme-appliance/acme-appliance.qcow2
+#   packer build -var 'iso_url=...' -var 'iso_checksum=sha256:...' appliance.pkr.hcl
 
 packer {
   required_plugins {
@@ -93,40 +86,3 @@ build {
     ]
   }
 }
-
-# ---------------------------------------------------------------------
-# Direct-to-vCenter alternative (uncomment and adjust):
-#
-# source "vsphere-iso" "acme_appliance" {
-#   vcenter_server      = "vcenter.example.com"
-#   username            = "svc-packer@vsphere.local"
-#   password            = "CHANGE-ME"
-#   insecure_connection = true
-#
-#   cluster        = "YOUR-CLUSTER"
-#   datastore      = "YOUR-DATASTORE"
-#   network        = "YOUR-PORTGROUP"
-#   folder         = "Appliances"
-#   vm_name        = var.vm_name
-#   guest_os_type  = "rhel9_64Guest"
-#
-#   CPUs      = var.cpus
-#   RAM       = var.memory_mb
-#   disk_controller_type = ["pvscsi"]
-#   storage {
-#     disk_size             = var.disk_size_mb
-#     disk_thin_provisioned = true
-#   }
-#
-#   iso_paths = ["[YOUR-DATASTORE] ISOs/Rocky-9-x86_64-minimal.iso"]
-#   http_directory = "."
-#   boot_command = [
-#     "<up><wait><tab>",
-#     " inst.ks=http://{{ .HTTPIP }}:{{ .HTTPPort }}/ks.cfg",
-#     " inst.repo=cdrom",
-#     "<enter>"
-#   ]
-#   ssh_username = "root"
-#   convert_to_template = true
-# }
-# ---------------------------------------------------------------------

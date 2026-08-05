@@ -5,25 +5,28 @@
 # dns_dispatcher.py) and deploys the result to Palo Alto via
 # deploy_to_panos.py.
 #
-# Each domains[] entry can optionally list `additional_names` -- extra
-# SANs included on the same certificate (e.g. a wildcard entry
-# "*.example.com" with additional_names: ["example.com"] to also cover
-# the bare apex domain on the same cert). All names for an entry are
-# passed to certbot as separate -d flags in one invocation.
-#
 # Usage:
 #   acme-renew.sh                     # process every configured domain entry
-#   acme-renew.sh <domain>            # process only the entry containing
-#                                      # <domain> (matches primary name or
-#                                      # any additional_names entry)
-#   acme-renew.sh <domain> --force    # same, ignoring certbot's 30-day
-#                                      # renewal window
+#   acme-renew.sh <domain>            # process only the entry containing <domain>
+#   acme-renew.sh <domain> --force    # same, ignoring certbot's 30-day renewal window
+#
+# NOTE on certbot's storage directories: this appliance runs certbot as an
+# UNPRIVILEGED service account (acme-appliance), not root. certbot's
+# normal defaults (/etc/letsencrypt, /var/lib/letsencrypt,
+# /var/log/letsencrypt) are root-owned system directories that a
+# non-root account cannot create or write to -- so instead we point
+# certbot at appliance-owned directories via --config-dir/--work-dir/
+# --logs-dir.
 
 set -euo pipefail
 
 APPLIANCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="${ACME_APPLIANCE_CONFIG:-/etc/acme-appliance/appliance.yaml}"
 LOG="${ACME_APPLIANCE_LOG:-/var/log/acme-appliance.log}"
+
+LE_CONFIG_DIR="${ACME_APPLIANCE_LE_CONFIG_DIR:-/etc/acme-appliance/letsencrypt}"
+LE_WORK_DIR="${ACME_APPLIANCE_LE_WORK_DIR:-/var/lib/acme-appliance/letsencrypt}"
+LE_LOGS_DIR="${ACME_APPLIANCE_LE_LOGS_DIR:-/var/log/acme-appliance/letsencrypt}"
 
 ONLY_DOMAIN=""
 FORCE_FLAG=""
@@ -41,16 +44,28 @@ if [ ! -f "$CONFIG" ]; then
   exit 1
 fi
 
+if ! command -v certbot >/dev/null 2>&1; then
+  log "ERROR: certbot is not installed or not on PATH."
+  log "Install it with: sudo dnf install -y epel-release certbot"
+  log "(then re-run this script or trigger a renewal from the web UI)"
+  exit 1
+fi
+
+for dir in "$LE_CONFIG_DIR" "$LE_WORK_DIR" "$LE_LOGS_DIR"; do
+  if ! mkdir -p "$dir" 2>/tmp/acme-renew-mkdir-err.$$; then
+    log "ERROR: could not create '$dir': $(cat /tmp/acme-renew-mkdir-err.$$ 2>/dev/null)"
+    log "This usually means the service account doesn't own this directory,"
+    log "or (if triggered from the web UI) the acme-webui.service systemd"
+    log "unit's ReadWritePaths doesn't include it."
+    rm -f /tmp/acme-renew-mkdir-err.$$
+    exit 1
+  fi
+  rm -f /tmp/acme-renew-mkdir-err.$$
+done
+
 EMAIL=$(python3 -c "import yaml,sys; print(yaml.safe_load(open('$CONFIG'))['acme']['email'])")
 SERVER=$(python3 -c "import yaml,sys; print(yaml.safe_load(open('$CONFIG'))['acme']['server'])")
 
-# Emits one line per certificate to issue:
-#   "<safe-cert-name>\t<primary-name>\t<name1 name2 ...>"
-# safe-cert-name is what gets passed to certbot's --cert-name (see
-# cert_naming.py -- wildcard entries get a "wildcard." prefix instead of
-# "*." so the on-disk lineage directory name has no special characters).
-# The third field is every name (primary + any additional_names) that
-# should be passed as -d flags for that cert.
 ALL_ENTRIES=$(python3 -c "
 import sys
 sys.path.insert(0, '$APPLIANCE_DIR')
@@ -77,7 +92,7 @@ for d in cfg.get('domains', []):
         break
 ")
   if [ -z "$RESOLVED" ]; then
-    log "ERROR: '$ONLY_DOMAIN' does not match any domains[] entry (checked primary name and additional_names) in $CONFIG"
+    log "ERROR: '$ONLY_DOMAIN' does not match any domains[] entry in $CONFIG"
     exit 1
   fi
   ENTRIES="$RESOLVED"
@@ -95,8 +110,6 @@ FAILURES=0
 while IFS=$'\t' read -r CERT_NAME ENTRY_NAME NAME_LIST; do
   [ -z "$ENTRY_NAME" ] && continue
 
-  # Build the -d flag array from the space-separated name list so certs
-  # with additional_names (SANs) get every name on one certbot invocation.
   DOMAIN_ARGS=()
   for NAME in $NAME_LIST; do
     DOMAIN_ARGS+=(-d "$NAME")
@@ -112,12 +125,15 @@ while IFS=$'\t' read -r CERT_NAME ENTRY_NAME NAME_LIST; do
       --manual-auth-hook "$APPLIANCE_DIR/dns_dispatcher.py add" \
       --manual-cleanup-hook "$APPLIANCE_DIR/dns_dispatcher.py remove" \
       --deploy-hook "$APPLIANCE_DIR/deploy_to_panos.py" \
+      --config-dir "$LE_CONFIG_DIR" \
+      --work-dir "$LE_WORK_DIR" \
+      --logs-dir "$LE_LOGS_DIR" \
       --cert-name "$CERT_NAME" \
       $FORCE_FLAG \
-      "${DOMAIN_ARGS[@]}"; then
+      "${DOMAIN_ARGS[@]}" 2>&1 | tee -a "$LOG"; then
     log "OK: $ENTRY_NAME"
   else
-    log "FAILED: $ENTRY_NAME (see certbot log at /var/log/letsencrypt/letsencrypt.log)"
+    log "FAILED: $ENTRY_NAME (certbot output above; full log also at $LE_LOGS_DIR/letsencrypt.log)"
     FAILURES=$((FAILURES + 1))
   fi
 done <<< "$ENTRIES"

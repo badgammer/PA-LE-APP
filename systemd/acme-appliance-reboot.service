@@ -1,0 +1,8 @@
+[Unit]
+Description=ACME Appliance - Reboot the host (triggered from the web UI after a step-up auth check)
+
+[Service]
+Type=oneshot
+User=root
+Environment=ACME_APPLIANCE_LOG=/var/log/acme-appliance.log
+ExecStart=/bin/sh -c 'echo "$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ) system-update: reboot triggered from web UI" >> ${ACME_APPLIANCE_LOG:-/var/log/acme-appliance.log}; /usr/sbin/reboot'

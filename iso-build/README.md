@@ -1,25 +1,13 @@
 # Building a prebuilt appliance image
 
 Three options here, in order of least to most "hands-off." All three end
-up running the exact same `bootstrap-appliance.sh`, which does the real
-work (install packages, copy the appliance, create the venv, set
-permissions, install/enable systemd units, generate a self-signed cert,
-create certbot's own working directories).
+up running the exact same `bootstrap-appliance.sh`, which also installs
+the System Updates feature's systemd units and sudoers rule.
 
 > Producing an actual bootable `.iso`/`.qcow2` requires internet access
-> (to download a Rocky Linux ISO) and tools (`xorriso`, `packer`,
-> `qemu-img`) not available in this assistant's sandbox. The scripts here
-> are complete and ready to run on your own build machine.
-
-## A note on python3-venv
-
-Unlike Debian/Ubuntu, Rocky/RHEL does **not** ship a separate
-`python3-venv` package -- the `venv` module is already part of the base
-`python3` package. If you add `python3-venv` to a `dnf install` command
-on Rocky/RHEL, dnf will fail to resolve that package name and abort the
-**entire** transaction, silently preventing everything else in that same
-command (including `certbot`) from installing too. `bootstrap-appliance.sh`
-and `ks.cfg` deliberately do NOT list `python3-venv` for this reason.
+> and tools (`xorriso`, `packer`, `qemu-img`) not available in this
+> assistant's sandbox. The scripts here are complete and ready to run on
+> your own build machine.
 
 ## Option 1: Bootstrap script only (fastest, no ISO tooling at all)
 
@@ -47,19 +35,29 @@ packer build \
   appliance.pkr.hcl
 ```
 
-Output: `output-acme-appliance/acme-appliance.qcow2`. A commented-out
-`vsphere-iso` source in `appliance.pkr.hcl` builds directly into vCenter
-instead if that's your target.
+## What bootstrap-appliance.sh sets up for System Updates
+
+- Installs `dnf-utils` (provides `needs-restarting`, used for
+  reboot-required detection).
+- Copies and enables `acme-appliance-check-updates.service`,
+  `acme-appliance-updates.service`, and `acme-appliance-reboot.service`
+  (NOT enabled at boot -- only started on demand from the web UI).
+- Installs and validates (`visudo -c`) the sudoers rule at
+  `/etc/sudoers.d/acme-appliance-updates` that lets the unprivileged
+  `acme-appliance` account start exactly those 3 units -- nothing else.
+- Installs `python-pam` into the venv for the step-up authentication
+  check (a real Linux sudo-group account's password, verified via PAM,
+  required before Apply Updates or Reboot will run).
+
+See the main `README.md`'s "System Updates feature" section for the full
+security model.
 
 ## After first boot (any option)
 
 1. Browse to `https://<appliance-ip>:8443/` and create the admin account.
-2. Add DNS provider(s), firewall(s), and domain(s). For each Palo Alto
-   firewall's admin role, make sure **Configuration**, **Import**,
-   **Commit**, and **Operational Requests** are all enabled under
-   Device > Admin Roles > &lt;role&gt; > XML API tab -- missing
-   "Operational Requests" specifically causes the web UI's
-   "Test connection" button to fail even though real deployments work.
-3. Click **Run renewal now** (or a domain's **Renew now**) for a first
-   test issuance -- point `acme.server` at the Let's Encrypt *staging*
-   endpoint first to avoid rate limits while testing.
+2. Add DNS provider(s), firewall(s), and domain(s). Make sure each Palo
+   Alto firewall's admin role has Configuration, Import, Commit, and
+   Operational Requests enabled.
+3. Visit the **System** page to confirm "Check for updates" works.
+   "Apply updates"/"Reboot" will ask for a Linux username/password from
+   the appliance's `wheel` group -- this is separate from the web UI login.

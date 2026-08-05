@@ -8,3 +8,9 @@ Flask>=3.0
 bcrypt>=4.1
 pyotp>=2.9
 gunicorn>=22.0
+
+# System Updates feature (webui/system_updates.py) -- PAM-based step-up
+# authentication for the Linux sudo-user credential check. Pure-Python,
+# ctypes-based binding to the system's libpam -- no compilation needed,
+# but the appliance OS must have PAM installed (always true on Rocky/RHEL).
+python-pam>=2.0

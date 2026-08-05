@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block title %}System Updates{% endblock %}
+{% block content %}
+<h1>System Updates</h1>
+<p class="subtitle">Check for and apply OS package updates (dnf) on the underlying appliance host.</p>
+
+<div class="card">
+  <h2 style="margin-top:0;">Check for updates</h2>
+  <p class="helptext">Runs a read-only <span class="mono">dnf check-update</span> -- does not install anything. No extra authentication required beyond your normal web UI login.</p>
+
+  {% if check_in_progress %}
+    <span class="badge" style="border-color:#d8a531;color:#d8a531;">Check in progress&hellip;</span>
+  {% else %}
+    <form method="post" action="{{ url_for('system_check') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="btn btn-secondary">Check for updates</button>
+    </form>
+  {% endif %}
+
+  {% if check_status.checked_at %}
+    <p class="helptext" style="margin-top:14px;">Last checked: <span class="mono">{{ check_status.checked_at }}</span> UTC</p>
+    {% if check_status.check_error %}
+      <div class="flash flash-error">dnf check-update reported an error (exit code {{ check_status.exit_code }}). Raw output:</div>
+      <div class="log-box">{{ check_status.raw_output }}</div>
+    {% elif check_status.updates_available %}
+      <p><strong>{{ check_status.packages|length }} package(s) have updates available:</strong></p>
+      <table>
+        <thead><tr><th>Package</th><th>New version</th><th>Repo</th></tr></thead>
+        <tbody>
+        {% for pkg in check_status.packages %}
+          <tr><td class="mono">{{ pkg.package }}</td><td class="mono">{{ pkg.version }}</td><td class="muted">{{ pkg.repo }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="helptext">System is up to date -- no package updates available.</p>
+    {% endif %}
+  {% else %}
+    <p class="helptext" style="margin-top:14px;">Updates have not been checked yet.</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0;">Apply updates</h2>
+  <p class="helptext">
+    Runs <span class="mono">dnf update -y</span> on the appliance host. This can take several minutes and may
+    briefly restart the appliance's own services (web UI, renewal timer) if their underlying packages (Python,
+    gunicorn, etc.) are updated. Progress is written to the <a href="{{ url_for('logs') }}">Logs</a> page.
+  </p>
+  <p class="helptext">
+    <strong>Requires step-up authentication:</strong> in addition to your web UI login, applying updates requires
+    the username and password of a real Linux account in the appliance's <span class="mono">{{ sudo_group }}</span>
+    (sudo-capable) group. This password is used only to verify your identity for this one action -- it is never
+    stored, logged, or used for anything else.
+  </p>
+
+  {% if update_in_progress %}
+    <span class="badge" style="border-color:#d8a531;color:#d8a531;">Update in progress&hellip;</span>
+    <p class="helptext">Follow progress on the <a href="{{ url_for('logs') }}">Logs</a> page.</p>
+  {% else %}
+    <form method="post" action="{{ url_for('system_apply') }}"
+          onsubmit="return confirm('Apply all available OS updates now? This may take several minutes.');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label for="apply_sudo_username">Linux username (must be in the {{ sudo_group }} group)</label>
+      <input type="text" id="apply_sudo_username" name="sudo_username" required autocomplete="off">
+      <label for="apply_sudo_password">Linux password</label>
+      <input type="password" id="apply_sudo_password" name="sudo_password" required autocomplete="off">
+      <div class="form-actions">
+        <button type="submit" class="btn">Apply updates now</button>
+      </div>
+    </form>
+  {% endif %}
+
+  {% if apply_status.timestamp %}
+    <p class="helptext" style="margin-top:14px;">
+      Last update attempt: <span class="mono">{{ apply_status.timestamp }}</span> UTC &middot;
+      exit code <span class="mono">{{ apply_status.exit_code }}</span>
+      {% if apply_status.exit_code == '0' %}<span style="color:var(--ok);">(success)</span>{% else %}<span style="color:#ff9b95;">(failed -- see Logs)</span>{% endif %}
+    </p>
+  {% endif %}
+</div>
+
+{% if apply_status.reboot_required == 'yes' %}
+<div class="card">
+  <h2 style="margin-top:0;">Reboot required</h2>
+  <p class="helptext">The last update installed a package (e.g. a new kernel) that requires a reboot to take effect.</p>
+  <p class="helptext"><strong>Requires the same step-up authentication as Apply updates above.</strong></p>
+  <form method="post" action="{{ url_for('system_reboot') }}"
+        onsubmit="return confirm('Reboot the appliance now? The web UI will be unreachable until it comes back up.');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label for="reboot_sudo_username">Linux username (must be in the {{ sudo_group }} group)</label>
+    <input type="text" id="reboot_sudo_username" name="sudo_username" required autocomplete="off">
+    <label for="reboot_sudo_password">Linux password</label>
+    <input type="password" id="reboot_sudo_password" name="sudo_password" required autocomplete="off">
+    <div class="form-actions">
+      <button type="submit" class="btn btn-danger">Reboot now</button>
+    </div>
+  </form>
+</div>
+{% endif %}
+{% endblock %}

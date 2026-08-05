@@ -1,0 +1,24 @@
+# Install with: sudo install -m 0440 -o root -g root iso-build/sudoers.d/acme-appliance-updates /etc/sudoers.d/acme-appliance-updates
+# Always validate with: sudo visudo -c -f /etc/sudoers.d/acme-appliance-updates
+#
+# Grants the UNPRIVILEGED acme-appliance service account (which runs the
+# always-on, network-facing web UI) the ability to start/query exactly
+# two pre-defined, purpose-built systemd units -- and nothing else. This
+# is the ONLY root-equivalent capability given to that account.
+#
+# The actual privileged work (dnf check-update / dnf update -y) happens
+# INSIDE those two systemd units, which run as root via systemd (PID 1),
+# not inside the web UI process itself. The web UI process never
+# directly executes dnf, sudo -i, or any other command as root -- it can
+# only ask systemd to start these two specific, already-defined units.
+#
+# This is intentionally narrow: acme-appliance CANNOT run "systemctl
+# start <anything-else>", cannot run dnf directly, and cannot run sudo
+# for any other command. If you ever add more systemctl targets here,
+# keep each one listed explicitly (never use wildcards in the command
+# path for this account).
+acme-appliance ALL=(root) NOPASSWD: /usr/bin/systemctl start acme-appliance-check-updates.service
+acme-appliance ALL=(root) NOPASSWD: /usr/bin/systemctl start acme-appliance-updates.service
+acme-appliance ALL=(root) NOPASSWD: /usr/bin/systemctl is-active acme-appliance-check-updates.service
+acme-appliance ALL=(root) NOPASSWD: /usr/bin/systemctl is-active acme-appliance-updates.service
+acme-appliance ALL=(root) NOPASSWD: /usr/bin/systemctl start acme-appliance-reboot.service

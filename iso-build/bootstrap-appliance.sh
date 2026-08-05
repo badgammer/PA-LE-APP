@@ -4,13 +4,6 @@
 # connected Rocky Linux 9 (minimal) box into a fully running ACME/
 # GlobalProtect appliance -- no ISO building required.
 #
-# This is the script that both:
-#   - the kickstart file (ks.cfg) calls from its %post section when you
-#     build a fully unattended install ISO (see build-iso.sh), and
-#   - you can run directly, by hand, against any existing Rocky 9 box
-#     (VM, bare metal, whatever) to get the same end result without ever
-#     touching an ISO.
-#
 # It is idempotent -- safe to re-run if a step fails partway through.
 #
 # Usage (as root):
@@ -28,10 +21,8 @@ SRC_DIR="${1:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 INSTALL_DIR="/opt/acme-appliance"
 CONFIG_DIR="/etc/acme-appliance"
 SERVICE_USER="acme-appliance"
+RUN_DIR="/var/run/acme-appliance"
 
-# certbot's own working directories -- appliance-owned (see the big
-# comment in bin/acme-renew.sh for why these aren't the usual root-owned
-# /etc/letsencrypt, /var/lib/letsencrypt, /var/log/letsencrypt).
 LE_CONFIG_DIR="$CONFIG_DIR/letsencrypt"
 LE_WORK_DIR="/var/lib/acme-appliance/letsencrypt"
 LE_LOGS_DIR="/var/log/acme-appliance/letsencrypt"
@@ -44,29 +35,25 @@ if [ ! -f "$SRC_DIR/webui/app.py" ]; then
   exit 1
 fi
 
-log "Installing OS packages (epel-release, python3, certbot, openssl)..."
+log "Installing OS packages (epel-release, python3, certbot, openssl, dnf-utils)..."
 # NOTE: do NOT add "python3-venv" here -- unlike Debian/Ubuntu, Rocky/RHEL
 # does not ship a separate python3-venv package; the venv module is part
-# of the base "python3" package. Adding a nonexistent package name to a
-# single `dnf install` command makes dnf abort the ENTIRE transaction
-# (installing nothing, including certbot), which is a common cause of
-# "certbot: command not found" later even though the command appeared to
-# run without obviously failing.
+# of the base "python3" package. Adding a nonexistent package name would
+# make the WHOLE dnf install fail, silently skipping certbot too.
+# dnf-utils (yum-utils) provides "needs-restarting", used by the System
+# Updates feature to detect whether a reboot is required after updates.
 dnf install -y epel-release
-dnf install -y python3 python3-pip certbot openssl policycoreutils-python-utils
+dnf install -y python3 python3-pip certbot openssl policycoreutils-python-utils dnf-utils
 
 log "Verifying python3's built-in venv module is usable..."
 if ! python3 -c "import venv" 2>/dev/null; then
-  echo "ERROR: python3's built-in 'venv' module is not available. This is" >&2
-  echo "unexpected on Rocky/RHEL -- check your python3 installation." >&2
+  echo "ERROR: python3's built-in 'venv' module is not available." >&2
   exit 1
 fi
 
 log "Verifying certbot installed correctly..."
 if ! command -v certbot >/dev/null 2>&1; then
   echo "ERROR: certbot did not install correctly (not found on PATH)." >&2
-  echo "Try running: dnf install -y epel-release certbot" >&2
-  echo "and re-run this script." >&2
   exit 1
 fi
 log "  $(certbot --version 2>&1)"
@@ -94,9 +81,9 @@ chmod +x "$INSTALL_DIR"/bin/*.sh \
 chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 
 log "Creating config/log/runtime directories with correct ownership..."
-mkdir -p "$CONFIG_DIR" "$CONFIG_DIR/backups" "$CONFIG_DIR/webui-tls" /var/run/acme-appliance
+mkdir -p "$CONFIG_DIR" "$CONFIG_DIR/backups" "$CONFIG_DIR/webui-tls" "$RUN_DIR"
 touch /var/log/acme-appliance.log
-chown -R "$SERVICE_USER:$SERVICE_USER" "$CONFIG_DIR" /var/log/acme-appliance.log /var/run/acme-appliance
+chown -R "$SERVICE_USER:$SERVICE_USER" "$CONFIG_DIR" /var/log/acme-appliance.log "$RUN_DIR"
 chmod 700 "$CONFIG_DIR"
 
 log "Creating certbot's own config/work/logs directories (appliance-owned, not the usual root-owned /etc/letsencrypt)..."
@@ -117,7 +104,30 @@ log "Installing systemd units..."
 cp "$INSTALL_DIR"/systemd/acme-renew.service /etc/systemd/system/
 cp "$INSTALL_DIR"/systemd/acme-renew.timer /etc/systemd/system/
 cp "$INSTALL_DIR"/systemd/acme-webui.service /etc/systemd/system/
+cp "$INSTALL_DIR"/systemd/acme-appliance-check-updates.service /etc/systemd/system/
+cp "$INSTALL_DIR"/systemd/acme-appliance-updates.service /etc/systemd/system/
+cp "$INSTALL_DIR"/systemd/acme-appliance-reboot.service /etc/systemd/system/
 systemctl daemon-reload
+
+log "Installing the sudoers rule for the System Updates feature..."
+SUDOERS_SRC="$INSTALL_DIR/iso-build/sudoers.d/acme-appliance-updates"
+SUDOERS_DST="/etc/sudoers.d/acme-appliance-updates"
+if [ -f "$SUDOERS_SRC" ]; then
+  install -m 0440 -o root -g root "$SUDOERS_SRC" "$SUDOERS_DST"
+  if command -v visudo >/dev/null 2>&1; then
+    if ! visudo -c -f "$SUDOERS_DST" >/dev/null; then
+      echo "ERROR: the installed sudoers file at $SUDOERS_DST failed validation." >&2
+      echo "The System Updates feature will not work until this is fixed. Removing it" >&2
+      echo "to avoid leaving an invalid file in /etc/sudoers.d/ (which can break sudo" >&2
+      echo "entirely on some configurations)." >&2
+      rm -f "$SUDOERS_DST"
+    else
+      log "  sudoers rule installed and validated OK."
+    fi
+  fi
+else
+  log "  WARNING: $SUDOERS_SRC not found -- System Updates feature (Check/Apply/Reboot buttons) will not work."
+fi
 
 log "Opening firewalld port 8443/tcp for the web UI (if firewalld is active)..."
 if systemctl is-active --quiet firewalld; then
@@ -130,6 +140,10 @@ fi
 log "Enabling and starting services..."
 systemctl enable --now acme-webui.service
 systemctl enable --now acme-renew.timer
+# NOTE: acme-appliance-check-updates.service, acme-appliance-updates.service,
+# and acme-appliance-reboot.service are intentionally NOT enabled here --
+# they are one-shot units only ever started on demand (via the sudoers
+# rule above) when someone clicks a button on the web UI's System page.
 
 log ""
 log "==================================================================="
@@ -144,6 +158,11 @@ log " IMPORTANT: the Palo Alto admin account/role used for the API must"
 log " have Configuration, Import, Commit, AND Operational Requests all"
 log " enabled under Device > Admin Roles > <role> > XML API tab, or"
 log " 'Test Connection' and/or certificate deployment will fail."
+log ""
+log " The web UI's System page lets you check for and apply OS updates."
+log " Applying updates or rebooting requires the username/password of a"
+log " real Linux account in the '$SERVICE_USER' host's sudo group"
+log " (default: wheel) as a step-up authentication check."
 log "==================================================================="
 log ""
 log "Check status with:"

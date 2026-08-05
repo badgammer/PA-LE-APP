@@ -9,11 +9,12 @@ User=acme-appliance
 Group=acme-appliance
 Environment=ACME_APPLIANCE_CONFIG=/etc/acme-appliance/appliance.yaml
 ExecStart=/opt/acme-appliance/bin/acme-renew.sh
-# certbot (run as the unprivileged acme-appliance user, not root) is
-# pointed at appliance-owned directories instead of the usual root-owned
-# /etc/letsencrypt, /var/lib/letsencrypt, /var/log/letsencrypt -- see the
-# comment in bin/acme-renew.sh. Those paths must be listed here so
-# ProtectSystem=strict doesn't block writes to them.
+# certbot (run as the unprivileged acme-appliance user) is pointed at
+# appliance-owned directories instead of the usual root-owned
+# /etc/letsencrypt, /var/lib/letsencrypt, /var/log/letsencrypt.
+# This unit does NOT need the System Updates feature's relaxed
+# NoNewPrivileges -- renewals never need to escalate privileges, so this
+# unit keeps the full, stricter sandboxing.
 ProtectSystem=strict
 ReadWritePaths=/var/log /etc/acme-appliance /var/lib/acme-appliance
 NoNewPrivileges=true

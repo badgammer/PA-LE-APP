@@ -1,0 +1,24 @@
+[Unit]
+Description=ACME Appliance - Apply OS updates (dnf update -y)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Environment=ACME_APPLIANCE_RUN_DIR=/var/run/acme-appliance
+Environment=ACME_APPLIANCE_LOG=/var/log/acme-appliance.log
+ExecStart=/opt/acme-appliance/bin/apply-system-update.sh
+# Intentionally minimal sandboxing: "dnf update -y" fundamentally needs
+# full root (it can touch nearly any file under /usr, /etc, kernel
+# modules, etc.), so there is little practical sandboxing to apply here
+# beyond what's already enforced by WHO is allowed to start this unit.
+#
+# This unit is only ever started via a narrowly-scoped sudoers rule that
+# lets the unprivileged acme-appliance service account run exactly
+# "systemctl start acme-appliance-updates.service" and nothing else (see
+# iso-build/sudoers.d/acme-appliance-updates) -- the always-on web UI
+# process itself never gains root; it can only ask systemd (PID 1, which
+# already runs as root) to start this one specific pre-approved unit.
+# The web UI additionally requires the requester to authenticate with a
+# real Linux sudo-capable (wheel group) account via PAM before it will
+# even issue that systemctl call -- see webui/system_updates.py.

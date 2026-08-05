@@ -1,0 +1,14 @@
+[Unit]
+Description=ACME Appliance - Check for available OS updates (read-only, dnf check-update)
+
+[Service]
+Type=oneshot
+User=root
+Environment=ACME_APPLIANCE_RUN_DIR=/var/run/acme-appliance
+Environment=ACME_APPLIANCE_LOG=/var/log/acme-appliance.log
+ExecStart=/opt/acme-appliance/bin/check-system-updates.sh
+# Intentionally minimal sandboxing: this unit exists specifically so the
+# always-on, network-facing web UI process (which runs locked down as an
+# unprivileged user) never needs root itself. This unit is small,
+# single-purpose, only runs for a few seconds, and only does a read-only
+# "dnf check-update" -- it installs nothing.

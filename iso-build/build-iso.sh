@@ -86,7 +86,3 @@ xorriso -as mkisofs \
 
 echo ""
 echo "==> Done: $OUT_ISO"
-echo "    Boot a VM (or write to USB with 'dd') from this ISO and it will"
-echo "    install Rocky Linux 9 and stand up the full appliance with no"
-echo "    further interaction. Console output/errors land in /root/ks-post.log"
-echo "    on the installed box if you need to debug the %post step."
