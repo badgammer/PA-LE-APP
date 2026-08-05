@@ -64,6 +64,9 @@ check/apply/reboot with step-up Linux sudo-group auth), Logs.
 ## Getting a running appliance
 
 ```bash
+sudo dnf update -y
+ip a #Write this down to get into the webui
+sudo dnf install git -y
 git clone <your-repo-url> /tmp/acme-appliance-src
 cd /tmp/acme-appliance-src
 sudo ./iso-build/bootstrap-appliance.sh

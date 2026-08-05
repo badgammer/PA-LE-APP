@@ -6,6 +6,9 @@ up running the exact same `bootstrap-appliance.sh`.
 ## Option 1: Bootstrap script only
 
 ```bash
+sudo dnf update -y
+ip a #Write this down to get into the webui
+sudo dnf install git -y
 git clone <your-repo-url> /tmp/acme-appliance-src
 cd /tmp/acme-appliance-src
 sudo ./iso-build/bootstrap-appliance.sh
