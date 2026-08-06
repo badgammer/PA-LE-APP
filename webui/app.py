@@ -120,17 +120,6 @@ def _appliance_log(message: str) -> None:
         pass
 
 
-# ------------------------------------------------- background job locking
-#
-# Three kinds of background job can run against a domain:
-#   - "all domains" renewal (renew-ALL.lock)
-#   - a single domain's renewal (renew-<domain>.lock)
-#   - a single domain's redeploy-existing-cert action (redeploy-<domain>.lock)
-# A given domain is considered "busy" if ANY of the above touching it is
-# active, since renewal and redeploy both ultimately import a certificate
-# and commit on the same firewall target(s) -- letting two such jobs run
-# concurrently for the same domain risks racing/conflicting PAN-OS commits.
-
 def _safe_lock_name(domain: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", domain)
 
@@ -173,8 +162,6 @@ def _redeploy_in_progress(domain: str) -> bool:
 
 
 def _domain_busy(domain: str) -> bool:
-    """True if a renewal (for this domain or all domains) or a redeploy
-    for this domain is already running."""
     return _renewal_in_progress(domain) or _redeploy_in_progress(domain)
 
 
@@ -377,16 +364,6 @@ def domain_renew(name):
 @app.route("/domains/<path:name>/redeploy", methods=["POST"])
 @login_required
 def domain_redeploy(name):
-    """
-    Re-runs just the PAN-OS import/attach/commit steps for a certificate
-    that's already been issued -- no new ACME issuance, no DNS-01
-    challenge, and no Let's Encrypt rate-limit usage at all. Useful when
-    the certificate itself is fine but the firewall-side deployment
-    needs to be redone (e.g. after fixing an SSL/TLS profile name or
-    firewall target, or after this appliance's own PAN-OS import bug was
-    fixed and an old certificate never actually made it onto the
-    firewall with its private key attached).
-    """
     check_csrf()
     cfg = store.load_config()
     if not store.get_domain(cfg, name):
@@ -436,12 +413,36 @@ def domains_list():
     for d in cfg["domains"]:
         rows.append({
             "entry": d,
+            "additional_names_display": _additional_names_display(d),
             "cert_expiry": _cert_expiry(d["name"]),
             "renewal_in_progress": _renewal_in_progress(d["name"]),
             "redeploy_in_progress": _redeploy_in_progress(d["name"]),
             "has_cert": _cert_lineage_dir(d["name"]) is not None,
         })
     return render_template("domains.html", rows=rows, any_renewal_in_progress=bool(_active_lock_labels()))
+
+
+def _additional_names_display(entry: dict) -> list:
+    """
+    Returns [{"name": ..., "override": provider_name_or_empty}] for
+    display on the Domains list page -- override is non-empty only when
+    that specific name uses a DIFFERENT dns_provider than the entry's
+    own default (i.e. a genuine per-name override), so the UI can show
+    a small badge only where it's actually meaningful.
+    """
+    default_provider = entry.get("dns_provider")
+    result = []
+    for item in entry.get("additional_names", []) or []:
+        if isinstance(item, dict):
+            name = item["name"]
+            override = item.get("dns_provider") or ""
+            if override == default_provider:
+                override = ""
+        else:
+            name = item
+            override = ""
+        result.append({"name": name, "override": override})
+    return result
 
 
 def _cert_lineage_dir(domain_name: str):
@@ -517,6 +518,7 @@ def domain_new():
             return redirect(url_for("domains_list"))
     return render_template(
         "domain_form.html", mode="new", entry=None, has_cert=False, redeploy_in_progress=False,
+        additional_names_for_form=[],
         providers=cfg["dns_providers"], firewalls=cfg["panos_firewalls"],
     )
 
@@ -543,8 +545,28 @@ def domain_edit(name):
         "domain_form.html", mode="edit", entry=entry,
         has_cert=_cert_lineage_dir(name) is not None,
         redeploy_in_progress=_redeploy_in_progress(name),
+        additional_names_for_form=_additional_names_for_form(entry),
         providers=cfg["dns_providers"], firewalls=cfg["panos_firewalls"],
     )
+
+
+def _additional_names_for_form(entry: dict) -> list:
+    """
+    Returns [{"name": ..., "provider_override": provider_or_empty}] for
+    populating the Edit Domain form's repeatable "Additional names"
+    rows. Unlike _additional_names_display (used on the Domains list),
+    this deliberately keeps provider_override EMPTY (not resolved to the
+    entry's default) whenever the stored entry didn't specify one, so
+    the form's dropdown correctly pre-selects "(same as primary)"
+    rather than appearing to explicitly re-select the default provider.
+    """
+    result = []
+    for item in entry.get("additional_names", []) or []:
+        if isinstance(item, dict):
+            result.append({"name": item["name"], "provider_override": item.get("dns_provider") or ""})
+        else:
+            result.append({"name": item, "provider_override": ""})
+    return result
 
 
 @app.route("/domains/<path:name>/delete", methods=["POST"])
@@ -562,13 +584,31 @@ def _domain_from_form(cfg):
     name = request.form.get("name", "").strip()
     dns_provider = request.form.get("dns_provider", "").strip()
     cert_name_prefix = request.form.get("cert_name_prefix", "").strip() or "gp-portal-cert"
-    additional_names_raw = request.form.get("additional_names", "").strip()
-    additional_names = [n.strip() for n in additional_names_raw.split(",") if n.strip()]
 
     if not name:
         return None, None, "Domain name is required."
     if dns_provider not in cfg["dns_providers"]:
-        return None, None, "Select a valid DNS provider."
+        return None, None, "Select a valid primary DNS provider."
+
+    # Additional names (SANs): each row is a name + an optional per-name
+    # DNS provider override. An override is only stored (as a {"name":
+    # ..., "dns_provider": ...} dict) when it differs from the entry's
+    # own primary dns_provider -- otherwise the name is stored as a
+    # plain string, keeping the YAML clean and fully backward-compatible
+    # with configs written before this feature existed.
+    additional_names = []
+    an_names = request.form.getlist("additional_name[]")
+    an_providers = request.form.getlist("additional_name_provider[]")
+    for an_name, an_provider in zip(an_names, an_providers):
+        an_name = an_name.strip()
+        if not an_name:
+            continue
+        if an_provider and an_provider != dns_provider:
+            if an_provider not in cfg["dns_providers"]:
+                return None, None, f"Unknown DNS provider override '{an_provider}' for additional name '{an_name}'."
+            additional_names.append({"name": an_name, "dns_provider": an_provider})
+        else:
+            additional_names.append(an_name)
 
     targets = []
     firewalls = request.form.getlist("target_firewall[]")

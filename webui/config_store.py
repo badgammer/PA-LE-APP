@@ -93,7 +93,24 @@ def delete_dns_provider(cfg: dict, instance_name: str) -> None:
 
 
 def dns_provider_in_use(cfg: dict, instance_name: str) -> list:
-    return [d["name"] for d in cfg["domains"] if d.get("dns_provider") == instance_name]
+    """
+    Returns the list of domain entry names that reference this DNS
+    provider instance -- either as the entry's own top-level
+    dns_provider, OR as a per-name override on one of its
+    additional_names (SANs). Checking both is required before allowing
+    deletion of a provider instance, since a per-name override alone
+    would otherwise be silently orphaned.
+    """
+    used = []
+    for d in cfg["domains"]:
+        if d.get("dns_provider") == instance_name:
+            used.append(d["name"])
+            continue
+        for item in d.get("additional_names", []):
+            if isinstance(item, dict) and item.get("dns_provider") == instance_name:
+                used.append(d["name"])
+                break
+    return used
 
 
 def upsert_firewall(cfg: dict, name: str, settings: dict) -> None:

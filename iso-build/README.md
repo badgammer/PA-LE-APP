@@ -32,11 +32,10 @@ sudo bash ./iso-build/bootstrap-appliance.sh
   firewall" button.
 - **Deploy failure reporting**: deploy_to_panos.py correctly exits
   non-zero if ANY firewall target fails.
-- **Panorama-managed firewalls (SSL/TLS profile / GP portal updates)**:
-  the API client now fetches the complete object and pushes a full
-  replacement via `type=edit`, exactly matching what the GUI's Edit
-  dialog does -- this is what lets PAN-OS create the necessary local
-  override automatically, instead of rejecting a partial `type=set` edit
-  to a single field with "may need to override template object first".
-  No manual CLI override step is required anymore for this specific
-  operation.
+- **Panorama-managed firewalls**: SSL/TLS profile / GP portal updates
+  use a full-object type=edit (like the GUI does), not a partial
+  type=set, so no manual CLI override is needed.
+- **Cross-zone SAN certificates**: a domain's `additional_names` can
+  each specify their own `dns_provider`, so a single certificate can
+  cover names spread across multiple DNS zones/accounts. See the main
+  README and `config/appliance.yaml.example` for details.

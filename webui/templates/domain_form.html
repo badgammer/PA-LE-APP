@@ -24,8 +24,7 @@
       Re-imports the certificate that's <strong>already issued and on disk</strong> to this
       domain's configured firewall target(s) and commits -- without requesting a new
       certificate from Let's Encrypt at all. Use this after fixing a firewall-side issue
-      (wrong SSL/TLS profile name, missing firewall target, etc.) instead of "Force renew
-      now", since it doesn't touch your Let's Encrypt rate-limit headroom.
+      instead of "Force renew now", since it doesn't touch your Let's Encrypt rate-limit headroom.
     </p>
     {% if redeploy_in_progress %}
       <span class="badge" style="border-color:#d8a531;color:#d8a531;">Redeploying&hellip;</span>
@@ -55,28 +54,57 @@
     <input type="text" id="name" name="name" required
            value="{{ entry.name if entry else '' }}"
            {% if mode == 'edit' %}readonly{% endif %}>
-    <p class="helptext">Wildcards are supported -- use e.g. "*.example.com". Combine with "Additional names" below to also cover the bare apex domain on the same certificate.</p>
+    <p class="helptext">Wildcards are supported -- use e.g. "*.example.com".</p>
 
-    <label for="additional_names">Additional names (SANs) on this same certificate -- comma-separated, optional</label>
-    <input type="text" id="additional_names" name="additional_names"
-           placeholder="e.g. example.com"
-           value="{{ entry.additional_names | join(', ') if entry and entry.additional_names else '' }}">
-    <p class="helptext">Every name here is issued as part of the SAME certificate as the domain above (a "SAN" cert). The most common use is pairing a wildcard with its bare apex domain, e.g. name = "*.example.com" and additional names = "example.com".</p>
-
-    <label for="dns_provider">DNS provider (used for the ACME DNS-01 challenge)</label>
-    <select id="dns_provider" name="dns_provider" required>
+    <label for="dns_provider">Primary DNS provider (used for the ACME DNS-01 challenge)</label>
+    <select id="dns_provider" name="dns_provider" required onchange="refreshOverrideDefaultLabels()">
       {% for pname, pcfg in providers.items() %}
         <option value="{{ pname }}" {% if entry and entry.dns_provider == pname %}selected{% endif %}>
           {{ pname }} ({{ pcfg.type }})
         </option>
       {% endfor %}
     </select>
-    <p class="helptext">All names above must be covered by this one DNS provider/zone.</p>
+    <p class="helptext">Used for the domain name above, and for every additional name below unless you override it.</p>
 
     <label for="cert_name_prefix">Certificate name prefix on the firewall</label>
     <input type="text" id="cert_name_prefix" name="cert_name_prefix"
            value="{{ entry.cert_name_prefix if entry else 'gp-portal-cert' }}">
     <p class="helptext">Each renewal creates a new cert object named "&lt;prefix&gt;-&lt;timestamp&gt;" rather than overwriting in place.</p>
+
+    <h2>Additional names (SANs)</h2>
+    <p class="helptext">
+      Extra names issued as part of the SAME certificate as the domain above -- e.g. pairing a
+      wildcard with its bare apex domain ("*.example.com" + "example.com"). Each name normally
+      uses the Primary DNS provider selected above, but you can override that per-name if a
+      given name lives in a <strong>different DNS zone or account</strong> -- as long as that
+      zone's provider is also configured under <a href="{{ url_for('dns_providers_list') }}">DNS Providers</a>,
+      a single certificate can span multiple zones this way.
+    </p>
+
+    <div id="additional-name-rows">
+      {% for an in additional_names_for_form %}
+      <div class="additional-name-row">
+        <div>
+          <label>Name</label>
+          <input type="text" name="additional_name[]" value="{{ an.name }}" placeholder="e.g. example.com">
+        </div>
+        <div>
+          <label>DNS provider</label>
+          <select name="additional_name_provider[]">
+            <option value="" {% if not an.provider_override %}selected{% endif %}>(same as primary)</option>
+            {% for pname in providers.keys() %}
+              <option value="{{ pname }}" {% if an.provider_override == pname %}selected{% endif %}>{{ pname }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <button type="button" class="btn btn-secondary btn-small" onclick="this.closest('.additional-name-row').remove()">Remove</button>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <button type="button" class="btn btn-secondary btn-small" onclick="addAdditionalNameRow()">+ Add another name</button>
 
     <h2>Firewall targets</h2>
     <p class="helptext">Where to deploy this certificate. Add one row per firewall (e.g. an HA pair, or portal + gateway) -- each row gets its own SSL/TLS Service Profile. Use "Fetch profiles" to pull the list of profiles that already exist on the selected firewall instead of typing the name by hand.</p>
@@ -129,6 +157,27 @@
   </form>
 </div>
 
+<template id="additional-name-row-template">
+  <div class="additional-name-row">
+    <div>
+      <label>Name</label>
+      <input type="text" name="additional_name[]" placeholder="e.g. example.com">
+    </div>
+    <div>
+      <label>DNS provider</label>
+      <select name="additional_name_provider[]">
+        <option value="" selected>(same as primary)</option>
+        {% for pname in providers.keys() %}
+          <option value="{{ pname }}">{{ pname }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <button type="button" class="btn btn-secondary btn-small" onclick="this.closest('.additional-name-row').remove()">Remove</button>
+    </div>
+  </div>
+</template>
+
 <template id="target-row-template">
   <div class="target-row">
     <div>
@@ -165,6 +214,18 @@
 </template>
 
 <script>
+function addAdditionalNameRow() {
+  const tpl = document.getElementById('additional-name-row-template');
+  const clone = tpl.content.cloneNode(true);
+  document.getElementById('additional-name-rows').appendChild(clone);
+}
+
+function refreshOverrideDefaultLabels() {
+  // purely cosmetic -- no-op placeholder in case we later want to show
+  // the currently-selected primary provider's name inline in each
+  // "(same as primary)" option; left as a hook for now.
+}
+
 function addTargetRow() {
   const tpl = document.getElementById('target-row-template');
   const clone = tpl.content.cloneNode(true);

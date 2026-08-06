@@ -3,28 +3,12 @@
 certbot --deploy-hook script. Runs only after certbot successfully issues
 or renews a certificate.
 
-Reads RENEWED_LINEAGE (the certbot lineage directory containing
-fullchain.pem/privkey.pem) and RENEWED_DOMAINS (space-separated domain
-names) from the environment, finds the matching domains[] entry for
-each, and imports+deploys the certificate to every configured PAN-OS
-target.
-
 This is also reused directly (NOT just via certbot) by
-bin/redeploy-cert.sh for the web UI's "Redeploy to firewall" button --
-that script sets these same two env vars to point at an ALREADY-ISSUED
-lineage on disk, letting you re-run just the PAN-OS import/attach/commit
-steps without a new ACME issuance. Nothing in this file needs to know or
-care which of the two callers invoked it.
+bin/redeploy-cert.sh for the web UI's "Redeploy to firewall" button.
 
-EXIT CODE: this script exits 1 if ANY firewall target for ANY domain
-failed to deploy, and 0 only if every target for every matched domain
-succeeded. This matters because bin/redeploy-cert.sh (and certbot's own
---deploy-hook mechanism) rely on this exit code to decide whether to log
-"OK" or "FAILED" -- previously this script always exited 0 regardless of
-per-target failures (it caught PanosError, logged it, and moved on to
-the next target without ever recording that a failure had occurred),
-which meant a firewall-side failure like a Panorama "override template
-object" error would still be reported to the caller as a success.
+EXIT CODE: exits 1 if ANY firewall target for ANY domain failed to
+deploy, and 0 only if every target for every matched domain succeeded
+(and at least one domain matched at all).
 """
 import datetime
 import logging
@@ -51,11 +35,28 @@ def load_config():
         return yaml.safe_load(f)
 
 
+def _entry_contains_name(entry: dict, domain: str) -> bool:
+    """
+    True if `domain` appears in this entry's additional_names list --
+    as a plain string OR as the "name" of a {"name": ..., "dns_provider":
+    ...} per-name provider override dict. This deployment step doesn't
+    care WHICH dns_provider was used to validate a name (that's only
+    relevant during the DNS-01 challenge, handled by dns_dispatcher.py)
+    -- it just needs to find which domains[] entry (and therefore which
+    panos_targets) a renewed name belongs to.
+    """
+    for item in entry.get("additional_names", []):
+        item_name = item["name"] if isinstance(item, dict) else item
+        if item_name == domain:
+            return True
+    return False
+
+
 def find_domain_config(cfg, domain: str):
     for entry in cfg["domains"]:
         if entry["name"] == domain:
             return entry
-        if domain in entry.get("additional_names", []):
+        if _entry_contains_name(entry, domain):
             return entry
     return None
 
@@ -133,10 +134,6 @@ def main() -> int:
                     "Failed deploying %s to firewall %s: %s",
                     cert_name, target["firewall"], exc,
                 )
-                # Continue on to remaining targets/firewalls rather than
-                # aborting the whole run over one failed device -- but
-                # any_failures ensures the overall exit code still
-                # reflects that this target did NOT succeed.
                 continue
 
     if not matched_any:

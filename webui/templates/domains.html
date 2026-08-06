@@ -14,8 +14,13 @@
     <tr>
       <td class="mono">
         {{ row.entry.name }}
-        {% if row.entry.additional_names %}
-          <div class="helptext">+ {{ row.entry.additional_names | join(", ") }}</div>
+        {% if row.additional_names_display %}
+          <div class="helptext">
+            +
+            {% for an in row.additional_names_display %}
+              {{ an.name }}{% if an.override %} <span class="badge" title="Uses a different DNS provider than the primary">via {{ an.override }}</span>{% endif %}{% if not loop.last %}, {% endif %}
+            {% endfor %}
+          </div>
         {% endif %}
       </td>
       <td><span class="badge">{{ row.entry.dns_provider }}</span></td>

@@ -9,6 +9,16 @@
 #   acme-renew.sh                     # process every configured domain entry
 #   acme-renew.sh <domain>            # process only the entry containing <domain>
 #   acme-renew.sh <domain> --force    # same, ignoring certbot's 30-day renewal window
+#
+# NOTE on additional_names / cross-zone SAN certificates: each name
+# passed to certbot's -d flag below comes from cert_naming.all_names(),
+# which flattens BOTH plain-string additional_names entries AND
+# {"name": ..., "dns_provider": ...} per-name provider override dicts
+# into a simple list of name strings -- certbot itself doesn't need to
+# know which DNS provider validates which name, only dns_dispatcher.py
+# (invoked per-name as certbot's --manual-auth-hook) does, and it
+# resolves the correct provider for each name independently via
+# cert_naming.resolve_dns_provider_for_name().
 
 set -euo pipefail
 
@@ -42,8 +52,6 @@ if ! command -v certbot >/dev/null 2>&1; then
   exit 1
 fi
 
-# certbot 3.0+ removed --manual-public-ip-logging-ok; older versions still
-# require it. Detect at runtime so this works regardless of installed version.
 IP_LOGGING_FLAG=""
 CERTBOT_VERSION_RAW="$(certbot --version 2>&1 || true)"
 CERTBOT_MAJOR="$(echo "$CERTBOT_VERSION_RAW" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 | cut -d. -f1)"
@@ -78,11 +86,10 @@ ALL_ENTRIES=$(python3 -c "
 import sys
 sys.path.insert(0, '$APPLIANCE_DIR')
 import yaml
-from cert_naming import safe_cert_name
+from cert_naming import safe_cert_name, all_names
 cfg = yaml.safe_load(open('$CONFIG'))
 for d in cfg.get('domains', []):
-    names = [d['name']] + list(d.get('additional_names', []))
-    print(safe_cert_name(d['name']) + '\t' + d['name'] + '\t' + ' '.join(names))
+    print(safe_cert_name(d['name']) + '\t' + d['name'] + '\t' + ' '.join(all_names(d)))
 ")
 
 if [ -n "$ONLY_DOMAIN" ]; then
@@ -90,11 +97,11 @@ if [ -n "$ONLY_DOMAIN" ]; then
 import sys
 sys.path.insert(0, '$APPLIANCE_DIR')
 import yaml
-from cert_naming import safe_cert_name
+from cert_naming import safe_cert_name, all_names
 cfg = yaml.safe_load(open('$CONFIG'))
 target = '$ONLY_DOMAIN'
 for d in cfg.get('domains', []):
-    names = [d['name']] + list(d.get('additional_names', []))
+    names = all_names(d)
     if target == d['name'] or target in names:
         print(safe_cert_name(d['name']) + '\t' + d['name'] + '\t' + ' '.join(names))
         break

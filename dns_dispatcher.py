@@ -9,6 +9,7 @@ import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dns_providers import get_provider, DnsProviderError  # noqa: E402
+from cert_naming import resolve_dns_provider_for_name  # noqa: E402
 
 CONFIG_PATH = os.environ.get("ACME_APPLIANCE_CONFIG", "/etc/acme-appliance/appliance.yaml")
 
@@ -25,11 +26,26 @@ def load_config():
         return yaml.safe_load(f)
 
 
+def _entry_contains_name(entry: dict, domain: str) -> bool:
+    """
+    True if `domain` is either this entry's primary name, or appears
+    (as a plain string OR as the "name" of a {"name": ..., "dns_provider":
+    ...} override dict) in its additional_names list.
+    """
+    if entry["name"] == domain:
+        return True
+    for item in entry.get("additional_names", []):
+        item_name = item["name"] if isinstance(item, dict) else item
+        if item_name == domain:
+            return True
+    return False
+
+
 def find_domain_config(cfg, domain: str):
     for entry in cfg["domains"]:
         if entry["name"] == domain or domain.endswith(entry["name"]):
             return entry
-        if domain in entry.get("additional_names", []):
+        if _entry_contains_name(entry, domain):
             return entry
     raise SystemExit(f"No domains[] entry in appliance.yaml matches '{domain}'")
 
@@ -54,13 +70,19 @@ def main():
     cfg = load_config()
     domain_cfg = find_domain_config(cfg, domain)
 
-    instance_name = domain_cfg["dns_provider"]
+    # Resolve which DNS provider instance to use for THIS SPECIFIC name --
+    # normally the domain entry's own default dns_provider, but this
+    # respects a per-name override set in additional_names[], letting a
+    # single SAN certificate span multiple DNS zones/accounts as long as
+    # each zone's provider is configured somewhere in dns_providers[].
+    instance_name = resolve_dns_provider_for_name(domain_cfg, domain)
     try:
         instance_cfg = cfg["dns_providers"][instance_name]
     except KeyError:
         raise SystemExit(
-            f"domains[] entry for '{domain}' references dns_provider "
-            f"'{instance_name}', which has no matching entry under dns_providers[]"
+            f"domains[] entry for '{domain_cfg['name']}' resolved dns_provider "
+            f"'{instance_name}' for name '{domain}', which has no matching entry "
+            f"under dns_providers[]"
         )
     provider_type = instance_cfg["type"]
     provider_settings = instance_cfg.get("settings", {})

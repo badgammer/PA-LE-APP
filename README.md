@@ -6,6 +6,44 @@ architecture, and automatically deploys the renewed certificate to one
 or more Palo Alto firewalls' GlobalProtect portal (or gateway) SSL/TLS
 Service Profile.
 
+## Cross-zone SAN certificates (per-name DNS provider override)
+
+Normally, every name on a domains[] entry -- the primary name and every
+`additional_names` entry -- uses that entry's single top-level
+`dns_provider` for its DNS-01 challenge. This works fine as long as
+every name lives in the same DNS zone/account (e.g. a wildcard + its
+apex domain).
+
+If you need a SAN certificate covering names in **different** DNS
+zones or accounts (e.g. your own domain plus a partner/customer's
+domain, or the same zone split across two cloud subscriptions), each
+`additional_names` entry can instead be an object specifying its own
+`dns_provider`, overriding the entry's default for just that one name:
+
+```yaml
+domains:
+  - name: vpn.howardscams.com
+    dns_provider: azure-howardscams          # default for this entry
+    additional_names:
+      - apex.howardscams.com                  # plain string -> uses azure-howardscams (default)
+      - name: portal.otherdomain.com          # override -> uses a different provider
+        dns_provider: azure-otherdomain
+    cert_name_prefix: gp-portal-cert
+    panos_targets: [...]
+```
+
+Both `azure-howardscams` and `azure-otherdomain` must exist under
+`dns_providers[]` (each configured for its own zone/account) -- the
+appliance resolves the correct provider independently for each name
+during the DNS-01 challenge. This is fully backward-compatible: existing
+configs with plain-string `additional_names` lists are unaffected.
+
+In the web UI, each "Additional name" row on the Domain form has its own
+DNS provider dropdown (defaulting to "(same as primary)"); attempting to
+delete a DNS provider that's still referenced -- either as an entry's
+primary provider OR as a per-name override -- is blocked with a clear
+error listing which domain(s) depend on it.
+
 ## Known gotchas already fixed here
 
 ### 1. ACME account email must be real
@@ -23,33 +61,9 @@ Set via the web UI's **Settings** page.
 ### 5. Silent deploy failures
 `deploy_to_panos.py` correctly exits non-zero if any firewall target fails.
 
-### 6. Panorama-managed firewalls: partial edits rejected, full edits succeed
-When updating an SSL/TLS Service Profile's certificate (or a
-GlobalProtect portal's certificate) on a Panorama-managed firewall,
-PAN-OS's API previously used a `type=set` call targeting just the one
-child field being changed (e.g. `.../SSL-Howards/certificate`). If that
-object is defined in a Panorama-pushed template, PAN-OS rejects this
-partial edit with `"set failed, may need to override template object
-first"` -- there's no local copy of the parent object to merge a leaf
-value into.
-
-Confirmed via the firewall's own config audit log that the GUI's Edit
-dialog succeeds at the exact same task using a `type=edit` action
-against the *entire* object's xpath (not a child field), submitting the
-complete object back with just the one field changed. PAN-OS creates
-the necessary local override as part of that atomic full-object edit.
-
-Fix: `panos/client.py`'s `set_ssl_tls_profile_certificate()` and
-`set_globalprotect_portal_certificate()` now do the same thing the GUI
-does -- fetch the complete current object (or start with a minimal one
-if it doesn't exist yet), update just the `<certificate>` field on that
-in-memory copy, and push the *entire* object back via `type=edit`. This
-means Panorama-managed profiles now update successfully through the API
-with no manual one-time CLI override step required. Verified this
-preserves all of an existing profile's other settings (protocol
-versions, trust certs, etc.) unchanged, replaces an existing certificate
-value in place without duplicating it, and still creates a fresh minimal
-object correctly if nothing exists at that xpath yet.
+### 6. Panorama-managed firewalls
+`panos/client.py` uses a full-object `type=edit` (matching the GUI)
+instead of a partial `type=set`, so no manual CLI override is needed.
 
 ### 7. Critical vs optional OS packages during setup
 `iso-build/bootstrap-appliance.sh` installs only genuinely-required

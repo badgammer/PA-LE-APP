@@ -1,19 +1,7 @@
-# ACME + Palo Alto appliance configuration
-# Copy to /etc/acme-appliance/appliance.yaml and fill in real values, OR
-# just use the web UI (see webui/) to manage this file -- it reads and
-# writes this exact structure.
-# File permissions should be 0600, owned by the service account (contains secrets).
-
 acme:
   email: "netops@example.com"
-  # Let's Encrypt production endpoint. Point at the staging endpoint
-  # (https://acme-staging-v02.api.letsencrypt.org/directory) while testing
-  # to avoid production rate limits.
   server: "https://acme-v02.api.letsencrypt.org/directory"
 
-# Named DNS provider *instances*. You can have more than one instance of
-# the same type (e.g. two Cloudflare accounts, two Azure subscriptions) --
-# each instance name is arbitrary and is referenced by domains[].dns_provider.
 dns_providers:
   azure-hoffman-net:
     type: azure
@@ -37,7 +25,6 @@ dns_providers:
     settings:
       hosted_zone_id: "CHANGE-ME"
       region: "us-east-1"
-      # Omit access key/secret to use the instance/role credential chain.
 
   internal-dns-shim:
     type: generic_webhook
@@ -46,21 +33,9 @@ dns_providers:
       remove_url: "https://dns-shim.internal.example.com/api/txt/remove"
       auth_header: "Bearer CHANGE-ME"
 
-# One entry per Palo Alto firewall the appliance is allowed to update.
-# IMPORTANT: the admin account (or the account behind the API key) must
-# use a custom Admin Role with ALL FOUR of these enabled under
-# Device > Admin Roles > <role> > XML API tab:
-#   - Configuration          (get/set SSL/TLS profile, list/delete certs)
-#   - Import                 (upload the certificate + key)
-#   - Commit                  (commit the change)
-#   - Operational Requests    (needed only for the web UI's "Test connection"
-#                              button -- deployment itself works without it,
-#                              but Test connection will fail without it)
 panos_firewalls:
   hq-firewall:
     hostname: "10.10.10.1"
-    # Prefer a long-lived API key generated once via:
-    #   https://<fw>/api/?type=keygen&user=<user>&password=<pass>
     api_key: "CHANGE-ME"
     verify_tls: false
     cleanup_old_certs: true
@@ -71,21 +46,13 @@ panos_firewalls:
     verify_tls: false
     cleanup_old_certs: true
 
-# One entry per certificate you want the appliance to manage. Each entry
-# produces ONE certificate; `panos_targets` lists everywhere that
-# certificate should be deployed, and each target can use its own
-# SSL/TLS Service Profile (or GlobalProtect portal cert field) -- so
-# different domains, or even different targets on the SAME domain, can
-# each be assigned their own specific profile.
 domains:
   - name: "vpn.example.com"
-    dns_provider: "azure-hoffman-net"    # must match a key in dns_providers above
-    cert_name_prefix: "gp-portal-cert"   # appliance appends a date/time stamp
+    dns_provider: "azure-hoffman-net"
+    cert_name_prefix: "gp-portal-cert"
     panos_targets:
-      - firewall: "hq-firewall"          # must match a key in panos_firewalls above
+      - firewall: "hq-firewall"
         ssl_tls_profile: "SSL-GP-Portal"
-        # OR, if you set the cert directly on the portal instead of a profile:
-        # globalprotect_portal: "gp-portal"
 
   - name: "vpn2.example.com"
     dns_provider: "cloudflare-main"
@@ -94,9 +61,6 @@ domains:
       - firewall: "branch-firewall"
         ssl_tls_profile: "SSL-GP-Portal"
 
-  # Example wildcard certificate. Combining a wildcard with its bare apex
-  # domain on ONE certificate (common, since it covers "anything.example.com"
-  # plus "example.com" itself) is done via `additional_names`.
   - name: "*.example.com"
     additional_names:
       - "example.com"
@@ -105,3 +69,22 @@ domains:
     panos_targets:
       - firewall: "hq-firewall"
         ssl_tls_profile: "SSL-Wildcard-Example"
+
+  # Example: a single certificate spanning TWO DIFFERENT DNS zones/accounts.
+  # The primary name (cross-zone.example.com) and any plain-string
+  # additional_names use the entry's own top-level dns_provider
+  # (azure-hoffman-net here). An additional_names entry can instead be a
+  # {name, dns_provider} object to use a DIFFERENT provider for JUST that
+  # one name -- as long as that provider is also configured above in
+  # dns_providers[]. This lets one certificate cover names in zones/
+  # accounts that no single DNS provider instance has access to.
+  - name: "cross-zone.example.com"
+    dns_provider: "azure-hoffman-net"
+    additional_names:
+      - "apex-alias.example.com"                       # plain string -> uses azure-hoffman-net (same as primary)
+      - name: "partner-portal.othercompany.com"        # per-name override -> uses a different zone/account
+        dns_provider: "cloudflare-main"
+    cert_name_prefix: "gp-portal-cert"
+    panos_targets:
+      - firewall: "hq-firewall"
+        ssl_tls_profile: "SSL-GP-Portal"
