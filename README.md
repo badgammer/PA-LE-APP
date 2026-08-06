@@ -23,36 +23,38 @@ Set via the web UI's **Settings** page.
 ### 5. Silent deploy failures
 `deploy_to_panos.py` correctly exits non-zero if any firewall target fails.
 
-### 6. Panorama-managed firewalls
-`panos/client.py` surfaces a specific hint for PAN-OS's "may need to
-override template object first" error.
+### 6. Panorama-managed firewalls: partial edits rejected, full edits succeed
+When updating an SSL/TLS Service Profile's certificate (or a
+GlobalProtect portal's certificate) on a Panorama-managed firewall,
+PAN-OS's API previously used a `type=set` call targeting just the one
+child field being changed (e.g. `.../SSL-Howards/certificate`). If that
+object is defined in a Panorama-pushed template, PAN-OS rejects this
+partial edit with `"set failed, may need to override template object
+first"` -- there's no local copy of the parent object to merge a leaf
+value into.
 
-### 7. Critical vs optional OS packages during setup (important)
+Confirmed via the firewall's own config audit log that the GUI's Edit
+dialog succeeds at the exact same task using a `type=edit` action
+against the *entire* object's xpath (not a child field), submitting the
+complete object back with just the one field changed. PAN-OS creates
+the necessary local override as part of that atomic full-object edit.
+
+Fix: `panos/client.py`'s `set_ssl_tls_profile_certificate()` and
+`set_globalprotect_portal_certificate()` now do the same thing the GUI
+does -- fetch the complete current object (or start with a minimal one
+if it doesn't exist yet), update just the `<certificate>` field on that
+in-memory copy, and push the *entire* object back via `type=edit`. This
+means Panorama-managed profiles now update successfully through the API
+with no manual one-time CLI override step required. Verified this
+preserves all of an existing profile's other settings (protocol
+versions, trust certs, etc.) unchanged, replaces an existing certificate
+value in place without duplicating it, and still creates a fresh minimal
+object correctly if nothing exists at that xpath yet.
+
+### 7. Critical vs optional OS packages during setup
 `iso-build/bootstrap-appliance.sh` installs only genuinely-required
-packages (`python3`, `python3-pip`, `certbot`, `openssl`) in one `dnf`
-transaction. Everything else that's merely convenient
-(`dnf-utils`, `policycoreutils-python-utils`) is installed separately,
-each in its own transaction, with a warning logged instead of the whole
-setup aborting if one fails.
-
-This matters because a single `dnf install <pkg1> <pkg2> ...` command
-is all-or-nothing -- if even one package has an unresolvable dependency
-(e.g. a repo/mirror metadata inconsistency), the ENTIRE transaction
-fails, silently blocking every other package in that same command,
-including certbot. This has happened twice: once with `python3-venv`
-(not a real package on Rocky/RHEL at all), and once with
-`policycoreutils-python-utils` (an unresolvable dependency on some
-systems/mirrors). Neither package is actually required for this
-appliance to run -- see `iso-build/README.md` for the full explanation,
-including why SELinux port-labeling (`semanage`, which
-`policycoreutils-python-utils` provides) normally isn't needed here at
-all.
-
-**A note on OS version:** this appliance was built and tested against
-Rocky/RHEL 9. If you're deploying to Rocky/RHEL 10 (or another EL10
-derivative), package names and default behavior should mostly carry
-over, but this hasn't been extensively validated on EL10 -- if you hit
-anything else EL10-specific, please flag it.
+packages in one dnf transaction; convenience packages are installed
+separately so one bad dependency can't block the whole setup.
 
 ## Redeploying an already-issued certificate
 
@@ -72,8 +74,8 @@ cd /tmp/acme-appliance-src
 sudo bash ./iso-build/bootstrap-appliance.sh
 ```
 
-See `iso-build/README.md` for manual setup, unattended ISO, Packer image
-build options, and the critical-vs-optional package installation design.
+See `iso-build/README.md` for manual setup, unattended ISO, and Packer
+image build options.
 
 ## Adding a new DNS provider
 

@@ -12,51 +12,6 @@ cd /tmp/acme-appliance-src
 sudo bash ./iso-build/bootstrap-appliance.sh
 ```
 
-## Critical vs optional packages (important)
-
-`bootstrap-appliance.sh` deliberately installs packages in two separate
-groups:
-
-- **Critical** (`python3`, `python3-pip`, `certbot`, `openssl`) -- one
-  `dnf install` transaction. The appliance genuinely cannot run without
-  these.
-- **Optional** (`dnf-utils`, `policycoreutils-python-utils`) -- each
-  installed in its OWN separate `dnf install` call, with a warning
-  logged (not a hard failure) if it can't install.
-
-This split exists because **a single `dnf install` command is
-all-or-nothing** -- if even one package in the list has an unresolvable
-dependency, the ENTIRE transaction fails, silently blocking every other
-package in that same command too. This has bitten this script twice:
-
-1. `python3-venv` isn't a real package on Rocky/RHEL (the `venv` module
-   ships inside base `python3`) -- listing it here previously aborted
-   the whole transaction, including certbot.
-2. `policycoreutils-python-utils` has been observed to have an
-   unresolvable dependency on some systems (a repo/mirror metadata
-   mismatch reporting `"nothing provides policycoreutils = X.Y-Z"` for
-   the exact version its own `python3-policycoreutils` dependency
-   needs) -- this ALSO previously aborted the whole transaction and
-   blocked certbot from installing, even though the appliance doesn't
-   actually need this package (see below).
-
-**Why `policycoreutils-python-utils` (which provides `semanage`) isn't
-actually required:** it exists purely for SELinux port-labeling
-troubleshooting. In practice this should never be needed here:
-
-- Port 8443 is already included in SELinux's default `http_port_t` port
-  list on RHEL/Rocky.
-- A plain systemd-launched binary with no custom SELinux type (like our
-  gunicorn process) normally runs under the very permissive
-  `unconfined_service_t` domain, which doesn't require port-specific
-  policy changes to bind to an already-typed port.
-
-If the web UI ever *does* fail to bind under SELinux enforcing mode
-(check `journalctl -t setroubleshoot` or `ausearch -m avc -ts recent`
-for AVC denials), install `policycoreutils-python-utils` manually and
-run `semanage port -a -t http_port_t -p tcp 8443` (use `-m` instead of
-`-a` if that port is already assigned a different type).
-
 ## After first boot
 
 1. Browse to `https://<appliance-ip>:8443/` and create the admin account.
@@ -66,9 +21,8 @@ run `semanage port -a -t http_port_t -p tcp 8443` (use `-m` instead of
 
 ## Known gotchas already fixed in this codebase
 
-- **python3-venv**: not a separate package on Rocky/RHEL.
-- **policycoreutils-python-utils / dnf-utils**: installed as best-effort
-  extras, never bundled with critical packages (see above).
+- **python3-venv / policycoreutils-python-utils**: critical vs optional
+  packages installed in separate dnf transactions.
 - **certbot version**: auto-detected at renewal time.
 - **DNS zone case-sensitivity**: Azure/Route53 providers compare zone
   names case-insensitively.
@@ -78,5 +32,11 @@ run `semanage port -a -t http_port_t -p tcp 8443` (use `-m` instead of
   firewall" button.
 - **Deploy failure reporting**: deploy_to_panos.py correctly exits
   non-zero if ANY firewall target fails.
-- **Panorama-managed firewalls**: a specific hint is shown for the
-  "may need to override template object first" error.
+- **Panorama-managed firewalls (SSL/TLS profile / GP portal updates)**:
+  the API client now fetches the complete object and pushes a full
+  replacement via `type=edit`, exactly matching what the GUI's Edit
+  dialog does -- this is what lets PAN-OS create the necessary local
+  override automatically, instead of rejecting a partial `type=set` edit
+  to a single field with "may need to override template object first".
+  No manual CLI override step is required anymore for this specific
+  operation.

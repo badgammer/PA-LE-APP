@@ -16,6 +16,7 @@ still work, or vice versa).
 
 import logging
 import time
+import xml.etree.ElementTree as ET
 
 import requests
 
@@ -45,7 +46,6 @@ class PanosClient:
             verify=self.verify_tls, timeout=self.timeout,
         )
         r.raise_for_status()
-        import xml.etree.ElementTree as ET
         root = ET.fromstring(r.text)
         key = root.findtext(".//key")
         if not key:
@@ -69,7 +69,6 @@ class PanosClient:
 
     @staticmethod
     def _check_success(xml_text: str, context: str):
-        import xml.etree.ElementTree as ET
         root = ET.fromstring(xml_text)
         if root.attrib.get("status") != "success":
             msg = xml_text
@@ -84,14 +83,14 @@ class PanosClient:
             elif "override" in lowered and "template" in lowered:
                 msg += (
                     "\nHint: this firewall is Panorama-managed and the object being "
-                    "modified (e.g. the SSL/TLS Service Profile) is defined in a "
-                    "Panorama-pushed template, which blocks direct local edits until "
-                    "it's overridden. Either (a) SSH to the firewall and run "
-                    "'configure' / 'override network ssl-tls-service-profile "
-                    "<profile-name>' / 'set ...' / 'commit' once to create a local "
-                    "override this appliance can then update on future renewals, or "
-                    "(b) manage this certificate assignment from Panorama itself "
-                    "instead of the local firewall API."
+                    "modified is defined in a Panorama-pushed template, which blocks "
+                    "a partial (type=set) edit to one of its child fields until a "
+                    "local override exists. This client normally avoids this by "
+                    "fetching the full object and pushing a complete replacement via "
+                    "type=edit (matching what the GUI's Edit dialog does) -- if "
+                    "you're still seeing this, the object may not exist at all yet "
+                    "at this xpath (neither locally nor via template), or the API "
+                    "account may lack permission to read it."
                 )
             raise PanosError(f"{context} failed: {msg}")
         return root
@@ -115,14 +114,8 @@ class PanosClient:
         firewall as a PAN-OS "keypair" object (category=keypair), which
         requires a SINGLE PEM file containing both the certificate and
         the private key concatenated together in one multipart "file"
-        field. category=certificate (the old, broken approach here)
-        imports ONLY the public certificate with no private key at all.
-
-        passphrase: PAN-OS's keypair import API requires this parameter
-        to be present (non-empty) on every call, but it's only actually
-        used to decrypt the private key if that key's PEM content
-        indicates it's encrypted. certbot's default keys are not
-        encrypted, so an inert placeholder is sent when none is given.
+        field. category=certificate imports ONLY the public certificate
+        with no private key at all.
         """
         with open(cert_path, "rb") as cert_f:
             cert_bytes = cert_f.read()
@@ -144,6 +137,51 @@ class PanosClient:
         self._check_success(text, f"import_certificate({cert_name})")
         log.info("Imported certificate+key %s", cert_name)
 
+    def _get_full_entry(self, xpath: str):
+        """
+        Fetches the complete, current XML <entry> element at the given
+        xpath (e.g. an SSL/TLS Service Profile or GlobalProtect portal),
+        returning None if nothing exists there yet (rather than raising),
+        so callers can distinguish "doesn't exist -- create it" from a
+        real API error.
+        """
+        try:
+            text = self._get({"type": "config", "action": "get", "xpath": xpath})
+        except requests.HTTPError as exc:
+            raise PanosError(f"get({xpath}) failed: {exc}") from exc
+        root = ET.fromstring(text)
+        if root.attrib.get("status") != "success":
+            # A "get" on an xpath that simply doesn't exist yet still
+            # normally reports success with an empty <result/>, but be
+            # defensive and treat any outright failure response the same
+            # way here -- callers fall back to creating a fresh entry.
+            return None
+        entry = root.find(".//entry")
+        return entry
+
+    def _push_full_entry(self, xpath: str, entry: "ET.Element", context: str) -> None:
+        """
+        Replaces (or creates, if it doesn't exist yet) the COMPLETE
+        object at xpath with the given <entry> element via type=edit.
+
+        This is the key fix for Panorama-managed firewalls: PAN-OS
+        rejects a partial type=set edit to a single child field (e.g.
+        just the <certificate> element) of an object that only exists
+        via a Panorama-pushed template, with "may need to override
+        template object first" -- because there's no local copy of the
+        parent object to merge a leaf value into. A full type=edit that
+        replaces the ENTIRE object at its own xpath does not have this
+        problem: PAN-OS creates the necessary local override as part of
+        the same atomic operation, exactly like the GUI's Edit dialog
+        does when you open an object, change one field, and click OK
+        (which also always saves the complete object, never just the
+        one field you touched).
+        """
+        element_xml = ET.tostring(entry, encoding="unicode")
+        params = {"type": "config", "action": "edit", "xpath": xpath, "element": element_xml}
+        text = self._get(params)
+        self._check_success(text, context)
+
     def set_ssl_tls_profile_certificate(self, profile_name: str, cert_name: str,
                                          vsys: str = None) -> None:
         if vsys:
@@ -153,26 +191,38 @@ class PanosClient:
             )
         else:
             base_xpath = f"/config/shared/ssl-tls-service-profile/entry[@name='{profile_name}']"
-        params = {
-            "type": "config", "action": "set",
-            "xpath": f"{base_xpath}/certificate",
-            "element": f"<certificate>{cert_name}</certificate>",
-        }
-        text = self._get(params)
-        self._check_success(text, f"set_ssl_tls_profile_certificate({profile_name})")
+
+        entry = self._get_full_entry(base_xpath)
+        if entry is None:
+            # Nothing exists at this xpath yet (not even via a Panorama
+            # template) -- create a minimal entry with just the
+            # certificate field, same as before this fix.
+            entry = ET.Element("entry", {"name": profile_name})
+
+        cert_elem = entry.find("certificate")
+        if cert_elem is None:
+            cert_elem = ET.SubElement(entry, "certificate")
+        cert_elem.text = cert_name
+
+        self._push_full_entry(base_xpath, entry, f"set_ssl_tls_profile_certificate({profile_name})")
         log.info("SSL/TLS profile %s now references %s", profile_name, cert_name)
 
     def set_globalprotect_portal_certificate(self, portal_name: str, cert_name: str) -> None:
         xpath = (
             "/config/devices/entry/network/global-protect/portal/"
-            f"entry[@name='{portal_name}']/certificate"
+            f"entry[@name='{portal_name}']"
         )
-        params = {
-            "type": "config", "action": "set", "xpath": xpath,
-            "element": f"<certificate>{cert_name}</certificate>",
-        }
-        text = self._get(params)
-        self._check_success(text, f"set_globalprotect_portal_certificate({portal_name})")
+
+        entry = self._get_full_entry(xpath)
+        if entry is None:
+            entry = ET.Element("entry", {"name": portal_name})
+
+        cert_elem = entry.find("certificate")
+        if cert_elem is None:
+            cert_elem = ET.SubElement(entry, "certificate")
+        cert_elem.text = cert_name
+
+        self._push_full_entry(xpath, entry, f"set_globalprotect_portal_certificate({portal_name})")
 
     def delete_certificate(self, cert_name: str) -> None:
         xpath = f"/config/shared/certificate/entry[@name='{cert_name}']"
@@ -181,13 +231,11 @@ class PanosClient:
         self._check_success(text, f"delete_certificate({cert_name})")
 
     def list_certificates(self):
-        import xml.etree.ElementTree as ET
         text = self._get({"type": "config", "action": "get", "xpath": "/config/shared/certificate"})
         root = ET.fromstring(text)
         return [e.attrib["name"] for e in root.findall(".//certificate/entry")]
 
     def list_ssl_tls_profiles(self, vsys: str = None):
-        import xml.etree.ElementTree as ET
         names = []
 
         def _fetch(xpath):
@@ -226,7 +274,6 @@ class PanosClient:
 
     def commit(self, description: str = "ACME appliance certificate update",
                 poll_interval: int = 5, poll_timeout: int = 300) -> None:
-        import xml.etree.ElementTree as ET
         text = self._get({
             "type": "commit",
             "cmd": f"<commit><description>{description}</description></commit>",
