@@ -200,7 +200,7 @@ and no Let's Encrypt rate-limit usage.
 sudo dnf update -y
 ip a #Write this down to get into the webui
 sudo dnf install git -y
-git clone https://github.com/badgammer/PA-LE-APP /tmp/acme-appliance-src
+git clone https://github.com/badgammer/PA-LE-APP/tree/Extended-Deployment-Targets /tmp/acme-appliance-src
 cd /tmp/acme-appliance-src
 sudo bash ./iso-build/bootstrap-appliance.sh
 ```
