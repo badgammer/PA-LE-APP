@@ -15,7 +15,7 @@ LOCK_PATH = CONFIG_PATH + ".lock"
 DEFAULT_CONFIG = {
     "acme": {"email": "", "server": "https://acme-v02.api.letsencrypt.org/directory"},
     "dns_providers": {},
-    "panos_firewalls": {},
+    "deploy_providers": {},
     "domains": [],
 }
 
@@ -23,6 +23,50 @@ DEFAULT_CONFIG = {
 def _ensure_parent_dirs():
     os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
     os.makedirs(BACKUP_DIR, exist_ok=True)
+
+
+def _migrate_legacy_config(cfg: dict) -> bool:
+    """
+    One-time, in-memory migration of pre-multi-target appliance.yaml
+    files (from before the "single pane of glass" deploy_providers/
+    generalization) into the current schema:
+      - the old top-level panos_firewalls[] map becomes deploy_providers[]
+        (each entry tagged type: "panos", with its old settings kept as-is).
+      - each domain's old panos_targets[] list becomes deploy_targets[],
+        with each {"firewall": ..., "ssl_tls_profile"/"globalprotect_portal": ...,
+        "vsys": ...} row rewritten to {"target": ..., "cert_field_type": ...,
+        "cert_field_value": ..., "vsys": ...}.
+    Returns True if anything was migrated, in which case the caller
+    should persist the result via save_config() so this only ever runs
+    once per appliance (subsequent loads will find deploy_providers/
+    deploy_targets already in place and skip migration entirely).
+    """
+    migrated = False
+
+    if "panos_firewalls" in cfg:
+        cfg.setdefault("deploy_providers", {})
+        for name, settings in cfg.pop("panos_firewalls").items():
+            cfg["deploy_providers"].setdefault(name, {"type": "panos", "settings": settings})
+        migrated = True
+
+    for d in cfg.get("domains", []):
+        if "panos_targets" in d:
+            new_targets = []
+            for t in d.pop("panos_targets"):
+                entry = {"target": t["firewall"]}
+                if t.get("globalprotect_portal"):
+                    entry["cert_field_type"] = "globalprotect_portal"
+                    entry["cert_field_value"] = t["globalprotect_portal"]
+                else:
+                    entry["cert_field_type"] = "ssl_tls_profile"
+                    entry["cert_field_value"] = t.get("ssl_tls_profile", "")
+                if t.get("vsys"):
+                    entry["vsys"] = t["vsys"]
+                new_targets.append(entry)
+            d["deploy_targets"] = new_targets
+            migrated = True
+
+    return migrated
 
 
 def load_config() -> dict:
@@ -35,6 +79,8 @@ def load_config() -> dict:
         cfg.setdefault(key, copy.deepcopy(default))
     cfg["acme"].setdefault("email", "")
     cfg["acme"].setdefault("server", DEFAULT_CONFIG["acme"]["server"])
+    if _migrate_legacy_config(cfg):
+        save_config(cfg)
     return cfg
 
 
@@ -113,19 +159,19 @@ def dns_provider_in_use(cfg: dict, instance_name: str) -> list:
     return used
 
 
-def upsert_firewall(cfg: dict, name: str, settings: dict) -> None:
-    cfg["panos_firewalls"][name] = settings
+def upsert_deploy_provider(cfg: dict, name: str, provider_type: str, settings: dict) -> None:
+    cfg["deploy_providers"][name] = {"type": provider_type, "settings": settings}
 
 
-def delete_firewall(cfg: dict, name: str) -> None:
-    cfg["panos_firewalls"].pop(name, None)
+def delete_deploy_provider(cfg: dict, name: str) -> None:
+    cfg["deploy_providers"].pop(name, None)
 
 
-def firewall_in_use(cfg: dict, name: str) -> list:
+def deploy_provider_in_use(cfg: dict, name: str) -> list:
     used = []
     for d in cfg["domains"]:
-        for t in d.get("panos_targets", []):
-            if t.get("firewall") == name:
+        for t in d.get("deploy_targets", []):
+            if t.get("target") == name:
                 used.append(d["name"])
                 break
     return used

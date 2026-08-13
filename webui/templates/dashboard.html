@@ -17,9 +17,9 @@
     <p><a href="{{ url_for('dns_providers_list') }}">View DNS providers &rarr;</a></p>
   </div>
   <div class="card">
-    <div class="stat-value">{{ firewall_count }}</div>
-    <div class="stat-label">Palo Alto firewalls</div>
-    <p><a href="{{ url_for('firewalls_list') }}">View firewalls &rarr;</a></p>
+    <div class="stat-value">{{ deploy_provider_count }}</div>
+    <div class="stat-label">Deploy target instances</div>
+    <p><a href="{{ url_for('deploy_providers_list') }}">View deploy targets &rarr;</a></p>
   </div>
 </div>
 <div class="card">

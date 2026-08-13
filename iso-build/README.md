@@ -16,7 +16,7 @@ sudo bash ./iso-build/bootstrap-appliance.sh
 
 1. Browse to `https://<appliance-ip>:8443/` and create the admin account.
 2. Visit **Settings** and set `acme.email` to a REAL, monitored email address.
-3. Add DNS provider(s), firewall(s), and domain(s).
+3. Add DNS provider(s), deploy target(s) (PAN-OS firewall, IIS server, etc.), and domain(s).
 4. Visit **System** to check for updates.
 
 ## Known gotchas already fixed in this codebase
@@ -28,13 +28,16 @@ sudo bash ./iso-build/bootstrap-appliance.sh
   names case-insensitively.
 - **PAN-OS certificate + private key import**: uses `category=keypair`
   with a single combined cert+key PEM file.
-- **Redeploy without re-issuing**: the Domains page has a "Redeploy to
-  firewall" button.
-- **Deploy failure reporting**: deploy_to_panos.py correctly exits
-  non-zero if ANY firewall target fails.
+- **Redeploy without re-issuing**: the Domains page has a "Redeploy"
+  button that re-runs deployment to every configured target, any type.
+- **Deploy failure reporting**: deploy_certificate.py correctly exits
+  non-zero if ANY deploy target, of any type, fails.
 - **Panorama-managed firewalls**: SSL/TLS profile / GP portal updates
   use a full-object type=edit (like the GUI does), not a partial
   type=set, so no manual CLI override is needed.
+- **Multi-target deploys**: a single certificate can be deployed to a
+  mix of PAN-OS firewalls AND Windows/IIS servers (via WinRM) in the
+  same run -- see `deploy_providers/` and the main README.
 - **Cross-zone SAN certificates**: a domain's `additional_names` can
   each specify their own `dns_provider`, so a single certificate can
   cover names spread across multiple DNS zones/accounts. See the main

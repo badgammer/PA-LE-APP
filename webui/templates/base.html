@@ -3,18 +3,18 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}ACME Appliance{% endblock %}</title>
+  <title>{% block title %}ACME Certificate Appliance{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
 {% if current_user %}
 <header class="topbar">
-  <div class="brand">ACME / GlobalProtect Appliance</div>
+  <div class="brand">ACME Certificate Appliance</div>
   <nav>
     <a href="{{ url_for('dashboard') }}">Dashboard</a>
     <a href="{{ url_for('domains_list') }}">Domains</a>
     <a href="{{ url_for('dns_providers_list') }}">DNS Providers</a>
-    <a href="{{ url_for('firewalls_list') }}">Firewalls</a>
+    <a href="{{ url_for('deploy_providers_list') }}">Deploy Targets</a>
     <a href="{{ url_for('settings_page') }}">Settings</a>
     <a href="{{ url_for('system_page') }}">System</a>
     <a href="{{ url_for('logs') }}">Logs</a>

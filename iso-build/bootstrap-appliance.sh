@@ -130,7 +130,7 @@ fi
 log "Setting permissions..."
 chmod +x "$INSTALL_DIR"/bin/*.sh \
          "$INSTALL_DIR"/dns_dispatcher.py \
-         "$INSTALL_DIR"/deploy_to_panos.py
+         "$INSTALL_DIR"/deploy_certificate.py
 chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 
 log "Creating config/log/runtime directories with correct ownership..."
