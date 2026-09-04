@@ -10,10 +10,16 @@ everything profile-specific (systemd units, service account(s), config
 seeding, TLS cert, sudoers, firewalld) lives in `install.sh` and
 `lib/profile-*.sh`.
 
+`git` is required to clone this repo but is **not included in a stock
+Rocky Linux 9 "minimal" install** -- install it first, before cloning
+(`bootstrap-appliance.sh` also installs it itself as one of its critical
+packages, but you still need it up front just to get the repo onto the
+box in the first place):
+
 ```bash
 sudo dnf update -y
 ip a #Write this down to get into the webui
-sudo dnf install git -y
+sudo dnf install -y git
 git clone https://github.com/badgammer/PA-LE-APP /tmp/acme-appliance-src
 cd /tmp/acme-appliance-src
 
@@ -26,12 +32,13 @@ sudo bash ./iso-build/bootstrap-appliance.sh . -- --profile=single-instance --no
 
 The unattended kickstart (`ks.cfg`) and Packer template (`appliance.pkr.hcl`)
 in this directory build the **single-instance** profile by default (the
-kickstart's `%post` section calls `bootstrap-appliance.sh` with no
-profile arguments, which then prompts -- for a genuinely unattended
-build, add `-- --profile=single-instance --non-interactive` to that
-invocation in `ks.cfg`, or the equivalent `--profile=msp-panos` if you're
-imaging an MSP fleet host). See the main README for what each profile
-changes.
+kickstart's `%post` section calls `bootstrap-appliance.sh` with
+`--profile=single-instance --non-interactive` explicitly -- %post runs
+completely unattended with no TTY, so a profile MUST be passed rather
+than relying on the interactive prompt, which would otherwise hang the
+build forever). Change that to `--profile=msp-panos` in `ks.cfg` if
+you're imaging an MSP fleet host instead. See the main README for what
+each profile changes.
 
 ## After first boot
 
@@ -42,18 +49,30 @@ changes.
 4. Visit **System** to check for updates.
 
 **msp-panos profile:**
-1. Install nginx if it isn't already present (each customer instance
+1. Browse to `https://<appliance-ip>:9443/` -- the **MSP Console**
+   dashboard -- and create the initial owner account. This is the
+   primary way to onboard/offboard customers and monitor the fleet; see
+   the main README's "Running the msp-panos profile" section for the
+   full walkthrough, including how to add other MSP staff accounts with
+   scoped per-customer read/write access.
+2. Install nginx if it isn't already present (each CUSTOMER instance
    binds a unix socket only -- there is no direct TCP listener to browse
-   to until nginx is routing to it).
-2. Onboard your first customer: `sudo bin/msp-provision-customer.sh <slug>`.
-3. Add the printed nginx server block, reload nginx, then browse to that
+   to until nginx is routing to it; the MSP Console itself, unlike
+   customer instances, does listen directly on 9443/tcp).
+3. Onboard your first customer from the MSP Console, or from the CLI:
+   `sudo bin/msp-provision-customer.sh <slug>`.
+4. Add the printed nginx server block, reload nginx, then browse to that
    customer's URL and create its admin account.
-4. Repeat per customer. Use `bin/msp-fleet-status.sh` for a cross-customer
+5. Repeat per customer. Use the MSP Console dashboard or
+   `bin/msp-fleet-status.sh` for a cross-customer
    health view at any time. There is no System page on this profile --
    see the main README's gotcha #9 for why.
 
 ## Known gotchas already fixed in this codebase
 
+- **git is not included in a Rocky Linux 9 minimal install**: installed
+  explicitly, both in the quick-start command above and as one of
+  `bootstrap-appliance.sh`'s critical packages.
 - **python3-venv / policycoreutils-python-utils**: critical vs optional
   packages installed in separate dnf transactions.
 - **certbot version**: auto-detected at renewal time.
@@ -84,3 +103,8 @@ changes.
   under the msp-panos profile (both the web routes and the sudoers rule
   that would back them), not just hidden from the nav bar -- see the
   main README's gotcha #9.
+- **MSP Console fleet dashboard**: msp-panos hosts get a separate
+  fleet-management web UI at `https://<host>:9443/` (own admin
+  database, own unprivileged service account, own narrowly-scoped
+  sudoers rule) -- see the main README's "Running the msp-panos
+  profile" section for the owner/staff permission model.

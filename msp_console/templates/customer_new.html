@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Add Customer{% endblock %}
+{% block content %}
+<h1>Add customer</h1>
+<div class="card">
+  <form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label for="slug">Customer slug (lowercase letters/digits/hyphens only, 23 characters or fewer)</label>
+    <input type="text" id="slug" name="slug" pattern="[a-z0-9][a-z0-9-]*[a-z0-9]?" maxlength="23" required autofocus>
+    <p class="helptext">
+      This becomes the systemd instance name (<code>acme-webui@&lt;slug&gt;.service</code>), the
+      directory name under <code>/etc/acme-appliance/customers/</code>, and part of the customer's
+      dedicated system account name (<code>acmecust-&lt;slug&gt;</code>). Choose something short and
+      stable -- it's not easily renamed later.
+    </p>
+    <div class="form-actions">
+      <button type="submit" class="btn">Provision customer</button>
+      <a href="{{ url_for('customers_list') }}" class="btn btn-secondary">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

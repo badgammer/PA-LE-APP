@@ -8,11 +8,33 @@
 # account.
 #
 # Usage:
-#   msp-deprovision-customer.sh <customer-slug>
+#   msp-deprovision-customer.sh <customer-slug>            # interactive confirm
+#   msp-deprovision-customer.sh <customer-slug> --yes       # skip confirmation
+#
+# --yes is REQUIRED when this script is invoked non-interactively (no
+# TTY) -- notably, this is how the MSP Console dashboard calls it (see
+# msp_console/actions.py deprovision_customer()) via a narrowly-scoped
+# sudoers rule. The dashboard performs its OWN confirmation step in the
+# web UI (a confirmation checkbox/dialog) before ever invoking this, so
+# skipping the shell prompt here does not skip confirmation entirely --
+# it just moves where that confirmation happens for the non-interactive
+# caller.
 
 set -euo pipefail
 
-SLUG="${1:?Usage: msp-deprovision-customer.sh <customer-slug>}"
+SLUG=""
+SKIP_CONFIRM=false
+for arg in "$@"; do
+    case "$arg" in
+        --yes) SKIP_CONFIRM=true ;;
+        *) SLUG="$arg" ;;
+    esac
+done
+if [[ -z "$SLUG" ]]; then
+    echo "Usage: msp-deprovision-customer.sh <customer-slug> [--yes]" >&2
+    exit 1
+fi
+
 SERVICE_USER="acmecust-$SLUG"
 CUSTOMER_ETC_DIR="/etc/acme-appliance/customers/$SLUG"
 CUSTOMER_VAR_DIR="/var/lib/acme-appliance/customers/$SLUG"
@@ -26,8 +48,10 @@ if [[ ! -d "$CUSTOMER_ETC_DIR" ]]; then
     exit 1
 fi
 
-read -r -p "This will STOP service for '$SLUG', archive its config/certs, and remove its system account. Continue? [y/N] " confirm
-[[ "$confirm" == "y" || "$confirm" == "Y" ]] || { echo "Aborted."; exit 1; }
+if ! $SKIP_CONFIRM; then
+    read -r -p "This will STOP service for '$SLUG', archive its config/certs, and remove its system account. Continue? [y/N] " confirm
+    [[ "$confirm" == "y" || "$confirm" == "Y" ]] || { echo "Aborted."; exit 1; }
+fi
 
 echo "Stopping and disabling systemd instances for '$SLUG'..."
 systemctl disable --now "acme-webui@${SLUG}.service" 2>/dev/null || true

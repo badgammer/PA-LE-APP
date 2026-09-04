@@ -229,6 +229,29 @@ never installs the sudoers rule in the first place -- so the feature is
 unavailable at both the application and OS-privilege layers, not just
 hidden from the nav bar.
 
+### 10. git is not included in a Rocky Linux 9 minimal install
+`iso-build/bootstrap-appliance.sh` now installs `git` alongside the
+other critical packages (epel-release, python3, certbot, openssl) in the
+same dnf transaction, since a fresh Rocky Linux 9 "minimal" ISO install
+does not ship it and this repo's own quick-start instructs cloning with
+`git` before that script is even reachable.
+
+### 11. MSP Console has its own account store and its own narrow sudoers rule
+The MSP Console (`msp_console/`, msp-panos profile only) runs as a
+dedicated `acme-msp-console` system account -- never root, never any
+customer's own account -- and every privileged fleet action it performs
+(provisioning, deprovisioning, triggering a renewal, restarting a
+customer's web UI, reading a customer's log) is delegated through a
+handful of exact-match sudoers rules in
+`iso-build/sudoers.d/acme-msp-console`. Its admin database
+(`/etc/acme-appliance/msp-console/admins.yaml`) is completely separate
+from any customer's own `users.yaml` -- an MSP Console login grants no
+access whatsoever to a customer's DNS providers, deploy targets, or
+domain configuration, and vice versa. Per-customer access for
+non-owner (staff) accounts is enforced as a 404, not a 403, on every
+route for a customer outside that admin's grant table -- so a staff
+account cannot even confirm a customer they lack access to exists.
+
 ## Migrating an existing (pre-multi-target) appliance.yaml
 
 If you're upgrading from a version of this appliance that only supported
@@ -250,19 +273,24 @@ and no Let's Encrypt rate-limit usage.
 
 ## Getting a running appliance
 
-`iso-build/bootstrap-appliance.sh` handles OS-level prep only (packages,
-copying this repo's code to `/opt/acme-appliance`, creating the Python
-venv) and then hands off to `install.sh` for the profile-specific setup
-covered above -- by default it will prompt you interactively for a
-profile, or you can pass one straight through:
+`git` is required to clone this repo but is **not included in a stock
+Rocky Linux 9 "minimal" install** -- install it first, before cloning:
 
 ```bash
 sudo dnf update -y
 ip a #Write this down to get into the webui
-sudo dnf install git -y
+sudo dnf install -y git
 git clone https://github.com/badgammer/PA-LE-APP /tmp/acme-appliance-src
 cd /tmp/acme-appliance-src
+```
 
+`iso-build/bootstrap-appliance.sh` handles the rest of OS-level prep
+(packages, copying this repo's code to `/opt/acme-appliance`, creating
+the Python venv) and then hands off to `install.sh` for the
+profile-specific setup covered above -- by default it will prompt you
+interactively for a profile, or you can pass one straight through:
+
+```bash
 # Interactive profile prompt:
 sudo bash ./iso-build/bootstrap-appliance.sh
 
@@ -280,8 +308,37 @@ image build options.
 
 ## Running the msp-panos profile
 
-Once a host is installed with `--profile=msp-panos`, onboard and manage
-customer instances with the helper scripts staged into `bin/`:
+Once a host is installed with `--profile=msp-panos`, the primary way to
+manage the fleet is the **MSP Console** dashboard at
+`https://<host>:9443/` -- first visit prompts you to create the initial
+owner account. From there you can:
+
+- Add and remove customers (equivalent to `bin/msp-provision-customer.sh`
+  / `bin/msp-deprovision-customer.sh`, without needing shell access)
+- View fleet-wide health (cert expiry, service state) and each
+  customer's recent log activity
+- Trigger a renewal check or restart a hung customer's web UI
+- Add other MSP staff accounts, each with their own per-customer
+  read/write grants -- a staff account only ever sees the customers
+  explicitly granted to it; anything else is completely invisible to
+  them, not just hidden behind disabled buttons
+
+Owners have full read/write access to every customer and can manage
+other admin accounts; staff accounts are scoped per-customer via an
+explicit grant table (read, read+write, or no access at all). The MSP
+Console runs as its own unprivileged system account
+(`acme-msp-console`), with its own separate admin database -- logging
+into it grants no access whatsoever to any customer's own DNS
+providers, deploy targets, or domain configuration. Every privileged
+fleet action it performs (provisioning, deprovisioning, triggering a
+renewal, restarting a customer's web UI, reading a customer's log) goes
+through a narrowly-scoped sudoers rule (see
+`iso-build/sudoers.d/acme-msp-console`), delegating to the exact same
+`bin/msp-*.sh` scripts described below.
+
+The `bin/msp-*.sh` CLI scripts remain fully functional and are what the
+console itself calls under the hood -- use them directly for
+scripting/automation/cron use where a web session isn't appropriate:
 
 ```bash
 # Onboard a new customer -- creates its dedicated system account,

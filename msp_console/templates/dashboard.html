@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+<p class="subtitle">Fleet overview across every customer you have access to.</p>
+
+<div class="grid-3">
+  <div class="card">
+    <div class="stat-value">{{ total_accessible }}</div>
+    <div class="stat-label">Customers you can access</div>
+    <p><a href="{{ url_for('customers_list') }}">View customers &rarr;</a></p>
+  </div>
+  <div class="card">
+    <div class="stat-value">{{ unhealthy|length }}</div>
+    <div class="stat-label">Need attention</div>
+  </div>
+  {% if current_user_is_owner %}
+  <div class="card">
+    <div class="stat-value">{{ total_fleet }}</div>
+    <div class="stat-label">Total customers on this fleet</div>
+  </div>
+  {% endif %}
+</div>
+
+{% if unhealthy %}
+<div class="card">
+  <h2 style="margin-top:0;">Needs attention</h2>
+  <table>
+    <thead><tr><th>Customer</th><th>Web UI</th><th>Renewal timer</th><th>Cert expiry</th><th>Note</th><th></th></tr></thead>
+    <tbody>
+    {% for s in unhealthy %}
+      <tr>
+        <td class="mono">{{ s.slug }}</td>
+        <td><span class="badge {{ 'badge-ok' if s.webui_state == 'up' else 'badge-err' }}">{{ s.webui_state }}</span></td>
+        <td><span class="badge {{ 'badge-ok' if s.renew_state == 'enabled' else 'badge-warn' }}">{{ s.renew_state }}</span></td>
+        <td>{{ s.cert_expiry or "not yet issued" }}</td>
+        <td><span class="badge badge-warn">{{ s.note }}</span></td>
+        <td><a href="{{ url_for('customer_detail', slug=s.slug) }}" class="btn btn-secondary btn-small">View</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% if current_user_is_owner %}
+<div class="card">
+  <h2 style="margin-top:0;">Onboard a new customer</h2>
+  <p class="helptext">Creates the customer's dedicated system account, directory tree, and starter config; enables and starts its systemd instances.</p>
+  <a href="{{ url_for('customer_new') }}" class="btn">+ Add customer</a>
+</div>
+{% endif %}
+{% endblock %}

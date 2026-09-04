@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}{{ status.slug }}{% endblock %}
+{% block content %}
+<h1>{{ status.slug }}</h1>
+<p class="subtitle">Your access level here: <span class="badge">{{ grant }}</span></p>
+
+<div class="grid-3">
+  <div class="card">
+    <div class="stat-value"><span class="badge {{ 'badge-ok' if status.webui_state == 'up' else 'badge-err' }}">{{ status.webui_state }}</span></div>
+    <div class="stat-label">Web UI</div>
+  </div>
+  <div class="card">
+    <div class="stat-value"><span class="badge {{ 'badge-ok' if status.renew_state == 'enabled' else 'badge-warn' }}">{{ status.renew_state }}</span></div>
+    <div class="stat-label">Renewal timer</div>
+  </div>
+  <div class="card">
+    <div class="stat-value">{{ status.cert_expiry or "not yet issued" }}</div>
+    <div class="stat-label">Soonest certificate expiry</div>
+  </div>
+</div>
+
+{% if grant == "write" %}
+<div class="card">
+  <h2 style="margin-top:0;">Actions</h2>
+  <form class="inline" method="post" action="{{ url_for('customer_renew', slug=status.slug) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit" class="btn btn-secondary">Trigger renewal check</button>
+  </form>
+  <form class="inline" method="post" action="{{ url_for('customer_restart', slug=status.slug) }}"
+        onsubmit="return confirm('Restart the web UI for {{ status.slug }}? This will briefly interrupt anyone using it.');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit" class="btn btn-secondary">Restart web UI</button>
+  </form>
+  <p class="helptext">Renewal runs in the background -- refresh the log below after a minute or two to check progress.</p>
+</div>
+
+<div class="card danger-zone">
+  <h2>Deprovision this customer</h2>
+  <p class="helptext">
+    Stops and disables this customer's services, archives its config/certs/keys to a dated
+    tarball on the host (nothing is deleted outright), and removes its dedicated system account.
+    This cannot be undone from this dashboard -- recovering requires manual access to the archive
+    on the host.
+  </p>
+  <form method="post" action="{{ url_for('customer_deprovision', slug=status.slug) }}"
+        onsubmit="return confirm('This will stop and archive {{ status.slug }}. Are you absolutely sure?');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label for="confirm_slug">Type the customer slug (<code>{{ status.slug }}</code>) to confirm</label>
+    <input type="text" id="confirm_slug" name="confirm_slug" required>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-danger">Deprovision {{ status.slug }}</button>
+    </div>
+  </form>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2 style="margin-top:0;">Recent log activity</h2>
+  {% if log_error %}
+    <div class="flash flash-error">Could not read log: {{ log_error }}</div>
+  {% else %}
+    <div class="log-box" id="log-box">{{ log_lines or "(no log entries yet)" }}</div>
+  {% endif %}
+  <p style="margin-top:10px;"><button type="button" class="btn btn-secondary btn-small" onclick="refreshLog()">Refresh</button></p>
+</div>
+
+<script>
+function refreshLog() {
+  fetch("{{ url_for('customer_log_fragment', slug=status.slug) }}")
+    .then(r => r.json())
+    .then(data => {
+      const box = document.getElementById('log-box');
+      if (!box) return;
+      box.textContent = data.ok ? (data.log || "(no log entries yet)") : ("Could not read log: " + data.error);
+    })
+    .catch(() => {});
+}
+</script>
+{% endblock %}

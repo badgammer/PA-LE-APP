@@ -5,11 +5,9 @@
 # bootstrap-appliance.sh / lib/profile-single-instance.sh creates the
 # single "acme-appliance" account for the single-instance profile),
 # creates and chowns this customer's config/cert/log/runtime directory
-# tree, seeds a starter appliance.yaml, generates its own webui TLS...
-# actually TLS is terminated by nginx for this profile, not per-instance
-# -- see deploy/nginx/acme-appliance-msp.conf.template -- then enables +
-# starts this customer's systemd instances (web UI + daily renewal
-# timer) and prints the nginx upstream snippet needed to route to it.
+# tree, seeds a starter appliance.yaml, then enables + starts this
+# customer's systemd instances (web UI + daily renewal timer) and prints
+# the nginx upstream snippet needed to route to it.
 #
 # Usage:
 #   msp-provision-customer.sh <customer-slug>

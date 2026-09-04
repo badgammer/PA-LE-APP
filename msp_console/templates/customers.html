@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Customers{% endblock %}
+{% block content %}
+<h1>Customers</h1>
+<p class="subtitle">Only customers you have at least read access to are shown here.</p>
+{% if current_user_is_owner %}
+<p><a class="btn" href="{{ url_for('customer_new') }}">+ Add customer</a></p>
+{% endif %}
+<table>
+  <thead><tr><th>Customer</th><th>Your access</th><th>Web UI</th><th>Renewal timer</th><th>Cert expiry</th><th></th></tr></thead>
+  <tbody>
+  {% for row in rows %}
+    <tr>
+      <td class="mono">{{ row.slug }}</td>
+      <td><span class="badge">{{ row.grant }}</span></td>
+      <td><span class="badge {{ 'badge-ok' if row.webui_state == 'up' else 'badge-err' }}">{{ row.webui_state }}</span></td>
+      <td><span class="badge {{ 'badge-ok' if row.renew_state == 'enabled' else 'badge-warn' }}">{{ row.renew_state }}</span></td>
+      <td>{{ row.cert_expiry or "not yet issued" }}{% if row.note %} <span class="badge badge-warn">{{ row.note }}</span>{% endif %}</td>
+      <td><a href="{{ url_for('customer_detail', slug=row.slug) }}" class="btn btn-secondary btn-small">View</a></td>
+    </tr>
+  {% else %}
+    <tr><td colspan="6" class="muted">No customers accessible to your account yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

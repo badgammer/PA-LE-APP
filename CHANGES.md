@@ -1,6 +1,6 @@
 # Change Tree -- Multi-Target Deploy Provider Rebuild
 
-Baseline: the previous beta release archive (uploaded beta with cross-zone
+Baseline: `PA-LE-APP-Beta_Release.zip` (the uploaded beta with cross-zone
 SAN mapping). This pass generalizes the appliance from a PAN-OS-only
 tool into a "single pane of glass" that can deploy the same certificate
 to any mix of target types, and adds the first new target type: IIS
@@ -120,15 +120,14 @@ iso-build/README.md         Updated gotchas list for generic deploy target langu
 
 ---
 
-## Change Tree -- Unified Installer: One Codebase, Two Install Profiles
+## Change Tree -- Unified Installer + Generalized Naming + git Prerequisite
 
-Baseline: this same repo (Alpha release), as uploaded. Adds a
-single-installer, dual-profile packaging layer on top of the existing
-multi-target appliance -- `install.sh` at the repo root now chooses
-between `single-instance` (today's existing single-tenant setup,
-unchanged) and a new `msp-panos` profile (multi-tenant: one systemd
-instance per customer, PAN-OS deploy targets only), from the SAME
-checked-out code, with no forked repository to maintain.
+Baseline: the previous multi-target release (PAN-OS + IIS, before any
+install-profile work). This pass adds a single-installer, dual-profile
+packaging layer on top of the existing multi-target appliance, removes
+customer-identifying naming from docs/examples, and fixes a genuine
+first-boot gap: a stock Rocky Linux 9 "minimal" install does not include
+`git`, which every quick-start path in this repo assumes is present.
 
 ### + New files
 
@@ -169,9 +168,7 @@ deploy/nginx/acme-appliance-msp.conf.template
 
 ```
 deploy_to_panos.py     Stale leftover from before the deploy_providers/ generalization --
-                          already superseded by deploy_certificate.py and listed as removed
-                          in this file's own prior entry, but was still physically present in
-                          the uploaded Alpha release; deleted now.
+                          already superseded by deploy_certificate.py; deleted.
 requirements.txt        Replaced by requirements-core.txt + requirements-iis.txt (see above).
 ```
 
@@ -218,10 +215,16 @@ webui/templates/base.html
 
 iso-build/bootstrap-appliance.sh
   - Trimmed down to ONLY universal, profile-independent steps: OS
-    package installation (unchanged from before), copying the appliance
-    source (plus install.sh/lib/) to /opt/acme-appliance, creating the
-    Python venv (dependency installation itself moved to install.sh,
-    since WHICH requirements file(s) get installed is profile-specific).
+    package installation, copying the appliance source (plus
+    install.sh/lib/) to /opt/acme-appliance, creating the Python venv
+    (dependency installation itself moved to install.sh, since WHICH
+    requirements file(s) get installed is profile-specific).
+  - NEW: "git" added to the critical-package dnf install list alongside
+    epel-release/python3/certbot/openssl -- a stock Rocky Linux 9
+    "minimal" install does not ship git, and this repo's own quick-start
+    instructs cloning with git before this script is ever reachable, so
+    this is defensive for any path that reaches this script without git
+    already having been installed some other way first.
   - Everything else it used to do (service account creation, systemd
     unit installation, config seeding, TLS cert generation, sudoers,
     firewalld) moved into lib/profile-single-instance.sh, unchanged in
@@ -237,6 +240,10 @@ iso-build/ks.cfg
     behavior (it has always produced a single-instance appliance).
 
 README.md
+  - NEW: "Getting a running appliance" now explicitly calls out that
+    `git` must be installed first (`sudo dnf install -y git`) since a
+    stock Rocky Linux 9 minimal install doesn't include it -- added
+    right before the `git clone` step, and as gotcha #10.
   - New "Install profiles" section with the full single-instance vs.
     msp-panos comparison table.
   - "Getting a running appliance" rewritten to show both the
@@ -251,14 +258,42 @@ README.md
     section notes how to make a new type profile-restricted if it
     doesn't have a safe multi-tenant story (matching how System Updates
     itself is excluded, even though that one isn't a deploy provider).
+  - Customer-identifying example domain names removed (see "Generalized
+    naming" below) -- all other content unchanged.
 
 iso-build/README.md
   - Explains the bootstrap-appliance.sh -> install.sh handoff and how
     ks.cfg/appliance.pkr.hcl relate to profile selection.
   - "After first boot" now has separate walkthroughs per profile.
-  - Known-gotchas list extended with the profile-split and System
-    Updates disablement entries (short pointers back to the main README).
+  - Known-gotchas list extended with the git-prerequisite, profile-split,
+    and System Updates disablement entries.
 ```
+
+### Generalized naming (customer-identifying strings removed)
+
+Two real-sounding customer/company domain names that had crept into
+documentation examples and code comments were replaced with the
+industry-standard "obviously fictional" placeholders (matching the
+convention Microsoft's own docs use), consistently across every file
+that referenced them:
+
+```
+hoffman.net / azure-hoffman-net       -> contoso.com / azure-contoso
+howardscams.com / azure-howardscams   -> fabrikam.com / azure-fabrikam
+HowardsCams.com (mixed-case variant)  -> Fabrikam.com
+```
+
+Affected files: `README.md`, `config/appliance.yaml.example`,
+`cert_naming.py` (module docstring example), `dns_providers/azure.py`
+(a code comment illustrating a mixed-case zone-name bug fix), and
+`webui/templates/dns_provider_form.html` (a placeholder instance-name
+example). No functional code changed -- these were all documentation,
+comments, or example/placeholder values, never real configuration.
+
+The GitHub clone URL (`https://github.com/badgammer/PA-LE-APP`) was
+deliberately left as-is per explicit instruction -- it is not a
+customer-identifying string and is out of scope for this generalization
+pass.
 
 ### Design notes worth knowing
 
@@ -271,60 +306,204 @@ iso-build/README.md
   A bug fix anywhere else in the codebase benefits both profiles
   automatically with zero porting effort.
 - **Per-customer identity uses plain system accounts, not systemd
-  DynamicUser.** An earlier draft of this design used `DynamicUser=true`
-  for per-customer isolation, but `DynamicUser` combined with raw
-  `ReadWritePaths=` on arbitrary `/etc` paths does NOT get automatic
-  ownership management from systemd the way `StateDirectory=`/
-  `ConfigurationDirectory=`/etc. do -- getting that combination genuinely
-  correct requires directory creation to happen at systemd's hands, not
-  a provisioning script's, which conflicts with wanting to pre-seed a
-  starter `appliance.yaml` before first start. Rather than depend on
-  subtle, systemd-version-sensitive behavior that couldn't be fully
-  exercised in this environment (no real systemd here), `msp-panos`
-  instead gives each customer instance its own plain `useradd --system`
-  account (`acmecust-<slug>`), mirroring EXACTLY how the existing
-  single-instance profile already establishes identity for its one
-  `acme-appliance` account. This is more code-reviewable, matches a
-  pattern already trusted elsewhere in this codebase, and sidesteps the
-  ambiguity entirely.
+  DynamicUser.** `DynamicUser` combined with raw `ReadWritePaths=` on
+  arbitrary `/etc` paths does not get automatic ownership management
+  from systemd the way `StateDirectory=`/`ConfigurationDirectory=`
+  do -- getting that combination genuinely correct requires directory
+  creation to happen at systemd's hands, not a provisioning script's,
+  which conflicts with wanting to pre-seed a starter `appliance.yaml`
+  before first start. `msp-panos` instead gives each customer instance
+  its own plain `useradd --system` account (`acmecust-<slug>`),
+  mirroring EXACTLY how the existing single-instance profile already
+  establishes identity for its one `acme-appliance` account.
 - **System Updates required a real architectural decision, not just a
-  config flag.** Reading `webui/system_updates.py` and
-  `iso-build/sudoers.d/acme-appliance-updates` closely revealed that
-  feature is inseparable from the single fixed `acme-appliance` account
-  (the sudoers rule names that account explicitly) and requires
-  `NoNewPrivileges` to stay unset for PAM/setuid access -- there is no
-  safe way to offer "reboot the host" or "apply OS updates" per-tenant
-  on a shared MSP fleet host. It is now excluded at both the
-  application layer (404 on every route) and the OS-privilege layer
-  (`lib/profile-msp-panos.sh` never installs that sudoers rule at all).
-  A useful side effect: because msp-panos instances never need PAM/sudo
-  access, their systemd units can set `NoNewPrivileges=true` -- strictly
-  tighter sandboxing than the single-instance web UI unit is able to use.
-- **Tested against the real uploaded codebase, not a reconstruction.**
-  Every script here was syntax-checked (`bash -n`) and every Python file
-  compiled (`python3 -m py_compile`) against the actual Alpha release
-  files. `install.sh` was dry-run end-to-end for BOTH profiles with
-  `systemctl`/`useradd`/`pip`/etc. stubbed and all paths redirected into
-  a scratch root, confirming the full step sequence (venv setup, service
-  account creation, directory creation, config seeding, TLS cert
-  generation call, systemd unit installation, sudoers install, or the
-  msp-panos equivalents) executes correctly and in the right order.
-  `bin/msp-provision-customer.sh` was exercised for successful
-  provisioning, invalid-slug rejection, overly-long-slug rejection,
-  genuine duplicate-customer refusal (verified with the directory
-  actually pre-existing, not just short-circuited by an earlier stub
-  failure), and the msp-panos-only profile guard. `install.sh`'s own
-  profile-switch guard (refusing to reprovision an existing host under a
-  different profile) was verified directly. `webui/app.py`'s
-  SYSTEM_UPDATES_ENABLED gating and `base.html`'s conditional nav link
-  were verified by rendering the REAL templates (not stubs) with Jinja2
-  in both states. The handful of failures surfaced during dry-run
-  testing were all genuine sandbox limitations (no real root/systemd/
-  useradd available here) rather than script logic bugs, and are called
-  out explicitly rather than glossed over.
-- **Known gap, called out rather than hidden:** `deploy_providers/iis.py`
-  still has not been exercised against a real Windows/IIS host in any
-  session so far (unchanged from the prior entry in this file) --
-  validate against a lab IIS box before relying on it in production,
-  regardless of which install profile you use it under.
+  config flag.** `webui/system_updates.py` and
+  `iso-build/sudoers.d/acme-appliance-updates` are inseparable from the
+  single fixed `acme-appliance` account (the sudoers rule names that
+  account explicitly) and require `NoNewPrivileges` to stay unset for
+  PAM/setuid access -- there is no safe way to offer "reboot the host"
+  or "apply OS updates" per-tenant on a shared MSP fleet host. It is now
+  excluded at both the application layer (404 on every route) and the
+  OS-privilege layer (`lib/profile-msp-panos.sh` never installs that
+  sudoers rule at all). A useful side effect: because msp-panos
+  instances never need PAM/sudo access, their systemd units can set
+  `NoNewPrivileges=true` -- strictly tighter sandboxing than the
+  single-instance web UI unit is able to use.
+- **The git fix closes a real first-boot gap, not a hypothetical one.**
+  Every quick-start path in this repo (main README, iso-build README)
+  starts with `git clone`, but a stock Rocky Linux 9 "minimal" ISO
+  install genuinely does not include git -- confirmed by inspecting
+  what `bootstrap-appliance.sh`'s existing critical-package dnf
+  transaction did and did not include. Fixed in two places: the
+  quick-start commands now explicitly run `sudo dnf install -y git`
+  before the `git clone` step, AND `bootstrap-appliance.sh` itself now
+  installs `git` as one of its critical packages (defensive, in case
+  this script is ever reached via a path that didn't `git clone` first
+  -- e.g. a source tree copied some other way).
+- **Tested against the actual uploaded codebase, not a reconstruction.**
+  This pass was applied directly to a freshly re-uploaded copy of the
+  appliance source (not carried over from a prior session's in-memory
+  state, since this environment resets between turns) -- every script
+  was syntax-checked (`bash -n`), every Python file compiled
+  (`python3 -m py_compile`), the YAML example was re-validated, and
+  every Jinja template was re-rendered (including `base.html`'s new
+  conditional nav link in both enabled/disabled states) against the
+  real files in this checkout.
+- **Known gap, still called out rather than hidden:** `deploy_providers/iis.py`
+  has still not been exercised against a real Windows/IIS host in any
+  session so far -- validate against a lab IIS box before relying on it
+  in production, regardless of which install profile you use it under.
+
+---
+
+## Change Tree -- MSP Console Fleet Dashboard Integrated
+
+Baseline: this same repo (the unified-installer/dual-profile release),
+merged with the previously-built `msp-console-addon` package. Adds a
+fleet-management web dashboard for the `msp-panos` profile, so onboarding
+a customer, checking fleet health, and delegating scoped access to other
+MSP staff no longer requires shell access to the host.
+
+### + New files
+
+```
+msp_console/app.py                Fleet dashboard Flask app -- own admin store,
+                                     own session, completely separate from any
+                                     customer's own web UI login
+msp_console/auth.py                Owner/staff permission model: owners get
+                                     implicit read+write on every customer;
+                                     staff get an explicit per-customer
+                                     {slug: "read"|"write"} grant table, with
+                                     unlisted customers fully invisible (404,
+                                     not 403) rather than merely hidden
+msp_console/fleet.py               Customer enumeration + status reads (cert
+                                     expiry, systemd unit state) straight off
+                                     disk/systemctl -- zero dependency on any
+                                     customer's own Flask process being up
+msp_console/actions.py             The ONLY module that ever shells out to
+                                     sudo -- provision/deprovision a customer,
+                                     trigger a renewal, restart a customer's
+                                     web UI, tail a customer's log, each
+                                     re-validating its slug argument and using
+                                     an explicit argv list (never a shell)
+msp_console/templates/*.html       Dashboard, customer list/detail, admin
+                                     list/add/edit, account settings, login/
+                                     setup/MFA -- styled consistently with the
+                                     existing webui/ templates
+msp_console/static/style.css       Dashboard styling
+systemd/msp-console/acme-msp-console.service
+                                    Runs as its own unprivileged
+                                     acme-msp-console system account, binds
+                                     0.0.0.0:9443 directly (unlike per-customer
+                                     instances, which bind unix sockets behind
+                                     nginx). NoNewPrivileges is deliberately
+                                     left unset (not true) -- it still needs
+                                     sudo for privileged actions, exactly like
+                                     the single-instance acme-webui.service
+                                     needs the same exemption for its own,
+                                     differently-scoped sudo use
+iso-build/sudoers.d/acme-msp-console
+                                    Five exact-match sudoers rules (customer
+                                     provision/deprovision, renewal trigger,
+                                     web UI restart, log tail) -- argument
+                                     order/flags cross-checked line-for-line
+                                     against actions.py's actual subprocess
+                                     calls
+bin/msp-tail-log.sh                Root-privileged helper (via sudo) that
+                                     reads ONE customer's own log file --
+                                     needed because that file is correctly
+                                     owned 0600 by the customer's OWN
+                                     dedicated account, which the console's
+                                     account has no read access to by design
+docs/MSP-CONSOLE-INTEGRATION.md    Integration notes (superseded by this
+                                     CHANGES.md entry now that the merge is
+                                     complete, kept for historical reference)
+```
+
+### ~ Modified files
+
+```
+bin/msp-deprovision-customer.sh
+  - Added a --yes flag that skips the interactive confirmation prompt.
+    Required because the MSP Console calls this script via sudo from a
+    web request, which has no TTY to prompt on at all -- the console
+    performs its own confirmation step (a "type the customer slug to
+    confirm" field) in the web UI before ever invoking this script.
+    Calling it by hand from a real terminal without --yes is completely
+    unchanged (interactive prompt, as before).
+
+lib/profile-msp-panos.sh
+  - Added a call to a new _install_msp_console() function, invoked
+    right after the existing templated-systemd-units step.
+  - _install_msp_console() creates the acme-msp-console service
+    account, the /etc/acme-appliance/msp-console/ config directory
+    (0700, owned by that account), a self-signed TLS certificate for
+    the console (separate from any customer's own cert), installs +
+    validates the sudoers rule, installs/enables/starts the systemd
+    unit, and opens firewalld port 9443/tcp if firewalld is active.
+  - The final "Done." banner now points to the MSP Console URL as the
+    primary next step, with the existing bin/msp-*.sh CLI commands
+    listed as the scriptable alternative underneath.
+
+README.md
+  - New paragraph at the top of "Running the msp-panos profile"
+    introducing the MSP Console as the primary fleet-management
+    interface, with the CLI scripts repositioned as the underlying
+    mechanism / scripting alternative.
+  - New gotcha #11 documenting the console's separate account store,
+    separate sudoers rule, and the 404-not-403 invisibility model for
+    staff accounts without a grant on a given customer.
+
+iso-build/README.md
+  - "After first boot" > msp-panos profile: now leads with browsing to
+    the MSP Console (port 9443) to create the initial owner account,
+    before the nginx-per-customer setup steps.
+  - New gotcha entry pointing back to the main README's MSP Console
+    section.
+```
+
+### Design notes worth knowing
+
+- **Verified against the REAL uploaded files, not a reconstruction.**
+  Both the appliance codebase and the msp-console-addon package were
+  re-uploaded as actual zip archives this pass (not the garbled
+  plain-text office365 preview of them) -- extracted with `unzip`,
+  diffed file-for-file against what the integration doc claimed would
+  change before applying any edit, and every test below was run against
+  the literal merged file tree, not a mental model of it.
+- **The one-line "replace" and "extend" instructions in
+  MSP-CONSOLE-INTEGRATION.md were verified, not just trusted.**
+  `diff`'d both versions of `bin/msp-deprovision-customer.sh` and both
+  versions of `lib/profile-msp-panos.sh` before applying either --
+  confirmed each addon version is a strict superset of the appliance's
+  existing version (only additive changes: the `--yes` flag, and the
+  `_install_msp_console` call + function), never a divergent rewrite.
+- **Full install.sh dry run for BOTH profiles against the actual merged
+  tree**, with `systemctl`/`useradd`/`sudo`/`firewall-cmd`/`pip` stubbed
+  and a thin `install`/`chown` shim (to route around this sandbox
+  having no real `useradd` to create the accounts those commands would
+  otherwise legitimately need to exist) -- confirmed msp-panos now
+  additionally creates the console's service account, generates a
+  REAL, valid self-signed TLS certificate (verified with
+  `openssl x509 -noout -subject -dates`), installs and validates
+  (`visudo -c`) the new sudoers file, and installs/starts the new
+  systemd unit -- and confirmed single-instance is entirely unaffected
+  (byte-identical install flow, since the MSP Console is wired in
+  exclusively through the msp-panos-only profile script).
+- **Cross-checked every privileged action's exact argv against the
+  sudoers file**, using the actual merged `actions.py` (not a copy) --
+  all five commands (provision, deprovision, renew, restart, tail-log)
+  match their corresponding sudoers rule argument-for-argument.
+- **Both template sets (webui/ and msp_console/) render independently
+  with no collisions** -- confirmed the two apps' `base.html` files are
+  genuinely distinct (separate Flask apps, separate template
+  directories, separate ports), and every template in both directories
+  parses and renders with realistic mock context.
+- **Known gaps carried forward, not newly introduced:**
+  `deploy_providers/iis.py` still hasn't been exercised against a real
+  Windows/IIS host, and the MSP Console's sudoers rule still hasn't
+  been validated with a live `sudo -l -U acme-msp-console` on a real
+  host with a real root user -- both call for the same kind of one-time
+  validation on an actual target box before production use.
+
 

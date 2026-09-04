@@ -1,0 +1,57 @@
+[Unit]
+Description=ACME Appliance MSP Console -- fleet dashboard
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=acme-msp-console
+Group=acme-msp-console
+WorkingDirectory=/opt/acme-appliance/msp_console
+
+Environment=ACME_MSP_CONSOLE_ADMINS=/etc/acme-appliance/msp-console/admins.yaml
+Environment=ACME_MSP_CONSOLE_SECRET_KEY_FILE=/etc/acme-appliance/msp-console/secret_key
+Environment=ACME_MSP_CONSOLE_LOG=/var/log/acme-appliance/msp-console.log
+Environment=ACME_MSP_CONSOLE_CUSTOMERS_DIR=/etc/acme-appliance/customers
+Environment=ACME_APPLIANCE_DIR=/opt/acme-appliance
+
+ExecStart=/opt/acme-appliance/venv/bin/gunicorn \
+    --bind 0.0.0.0:9443 \
+    --certfile /etc/acme-appliance/msp-console/tls/console.crt \
+    --keyfile /etc/acme-appliance/msp-console/tls/console.key \
+    --workers 2 \
+    --timeout 90 \
+    app:app
+Restart=on-failure
+RestartSec=5
+
+# This account is DELIBERATELY unprivileged, exactly like the
+# single-instance profile's acme-webui.service account -- every action
+# that needs root (provisioning/deprovisioning customers, starting a
+# renewal, restarting a customer's web UI, reading a customer's log)
+# goes through the narrowly-scoped sudoers rule in
+# iso-build/sudoers.d/acme-msp-console, which permits ONLY a handful of
+# specific, pre-validated commands -- see msp_console/actions.py for the
+# Python side of that boundary.
+#
+# IMPORTANT: NoNewPrivileges is intentionally NOT set to true here,
+# unlike some other units in this appliance. sudo is a setuid-root
+# binary -- NoNewPrivileges=true would silently prevent it from ever
+# gaining root, making EVERY action this console performs fail, not
+# just malicious ones (this is the exact same reasoning already
+# documented on the single-instance profile's acme-webui.service, which
+# needs the same exemption for its own, differently-scoped sudo use).
+# This is a deliberate, narrow trade-off: this service can ONLY escalate
+# via the specific, fixed commands listed in
+# iso-build/sudoers.d/acme-msp-console -- it still cannot run arbitrary
+# commands as root.
+ProtectSystem=strict
+ReadWritePaths=/etc/acme-appliance/msp-console /var/log/acme-appliance
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target

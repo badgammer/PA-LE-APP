@@ -58,7 +58,7 @@ if [ ! -f "$SRC_DIR/webui/app.py" ]; then
   exit 1
 fi
 
-log "Installing critical OS packages (epel-release, python3, certbot, openssl)..."
+log "Installing critical OS packages (git, epel-release, python3, certbot, openssl)..."
 # IMPORTANT: this dnf install list contains ONLY packages this appliance
 # genuinely cannot function without, under EITHER install profile. Every
 # package in a single dnf transaction must resolve successfully for ANY
@@ -76,13 +76,21 @@ log "Installing critical OS packages (epel-release, python3, certbot, openssl)..
 #     this ALSO previously broke this exact transaction and blocked
 #     certbot from installing, even though this appliance doesn't
 #     actually require that package (see the note below).
+# "git" is included here (not treated as optional) because a fresh
+# Rocky Linux 9 "minimal" install does NOT ship it, and this repo's own
+# README/quick-start instructs cloning this repository with git BEFORE
+# this script ever runs -- so by the time bootstrap-appliance.sh itself
+# executes, git already needed to exist. It's listed here anyway so that
+# re-running this script (or invoking it from a context where git
+# wasn't installed some other way first, e.g. a from-source copy that
+# didn't use git clone) doesn't silently assume it's present.
 # Going forward: only add a package to THIS list if the appliance is
 # genuinely non-functional without it. Anything merely convenient or
 # defensive belongs in the "optional packages" step further down, each
 # installed in its OWN transaction so a failure there can never block
 # the packages the appliance actually needs to run.
 dnf install -y epel-release
-dnf install -y python3 python3-pip certbot openssl
+dnf install -y git python3 python3-pip certbot openssl
 
 log "Verifying python3's built-in venv module is usable..."
 if ! python3 -c "import venv" 2>/dev/null; then

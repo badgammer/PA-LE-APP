@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Admins{% endblock %}
+{% block content %}
+<h1>MSP Console admins</h1>
+<p class="subtitle">Owners have full read/write on every customer and can manage other admin accounts. Staff accounts see only the customers explicitly granted below.</p>
+<p><a class="btn" href="{{ url_for('admin_new') }}">+ Add admin</a></p>
+<table>
+  <thead><tr><th>Username</th><th>Role</th><th>Customer grants</th><th>MFA</th><th></th></tr></thead>
+  <tbody>
+  {% for username, admin in admins.items() %}
+    <tr>
+      <td class="mono">{{ username }}</td>
+      <td>{% if admin.is_owner %}<span class="badge badge-ok">owner</span>{% else %}<span class="badge">staff</span>{% endif %}</td>
+      <td>
+        {% if admin.is_owner %}
+          <span class="muted">all customers (write)</span>
+        {% elif admin.customer_grants %}
+          {% for slug, level in admin.customer_grants.items() %}
+            <span class="badge">{{ slug }}: {{ level }}</span>
+          {% endfor %}
+        {% else %}
+          <span class="muted">none</span>
+        {% endif %}
+      </td>
+      <td>{{ "Yes" if admin.totp_enabled else "No" }}</td>
+      <td class="actions">
+        <a href="{{ url_for('admin_edit', username=username) }}" class="btn btn-secondary btn-small">Edit</a>
+        {% if username != current_user %}
+        <form class="inline" method="post" action="{{ url_for('admin_delete', username=username) }}"
+              onsubmit="return confirm('Delete admin {{ username }}?');">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="btn btn-danger btn-small">Delete</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5" class="muted">No admins configured yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}
