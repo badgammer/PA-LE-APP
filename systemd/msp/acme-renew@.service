@@ -1,0 +1,34 @@
+[Unit]
+Description=ACME certificate renewal + deploy target sync -- customer instance %i
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=acmecust-%i
+Group=acmecust-%i
+
+Environment=ACME_APPLIANCE_PROFILE=msp-panos
+Environment=ACME_APPLIANCE_CONFIG=/etc/acme-appliance/customers/%i/appliance.yaml
+Environment=ACME_APPLIANCE_LOG=/var/log/acme-appliance/customers/%i.log
+Environment=ACME_APPLIANCE_LE_CONFIG_DIR=/etc/acme-appliance/customers/%i/letsencrypt
+Environment=ACME_APPLIANCE_LE_WORK_DIR=/var/lib/acme-appliance/customers/%i/letsencrypt
+Environment=ACME_APPLIANCE_LE_LOGS_DIR=/var/log/acme-appliance/customers/%i/letsencrypt
+ExecStart=/opt/acme-appliance/bin/acme-renew.sh
+
+# This unit does NOT need the relaxed NoNewPrivileges the single-instance
+# acme-webui.service requires (PAM/sudo for the System Updates feature) --
+# renewals never need to escalate privileges under EITHER profile, and
+# System Updates is disabled entirely under msp-panos regardless -- so
+# this keeps the full, stricter sandboxing, exactly like the
+# single-instance acme-renew.service already does.
+ProtectSystem=strict
+ReadWritePaths=/etc/acme-appliance/customers/%i /var/lib/acme-appliance/customers/%i /var/log/acme-appliance/customers
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Resource ceiling so one customer's pathological renewal (e.g. a retry
+# storm against a broken DNS provider) cannot starve CPU/memory away from
+# every OTHER customer's renewal timer firing on the same host.
+CPUQuota=50%
+MemoryMax=512M

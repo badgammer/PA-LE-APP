@@ -1,0 +1,16 @@
+[Unit]
+Description=Daily ACME renewal check -- customer instance %i
+
+[Timer]
+OnCalendar=daily
+# Spread each customer's renewal check across a random window instead of
+# every instance firing at the exact same second -- with dozens/hundreds
+# of customer instances on one host, a synchronized daily fire is
+# exactly the kind of self-inflicted spike (DNS provider API calls,
+# certbot processes, PAN-OS commits all at once) worth avoiding by
+# design rather than discovering during an incident.
+RandomizedDelaySec=3600
+Persistent=true
+
+[Install]
+WantedBy=timers.target

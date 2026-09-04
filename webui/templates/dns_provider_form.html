@@ -18,7 +18,7 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="type" value="{{ selected_type }}">
     {% if mode == "new" %}
-    <label for="instance_name">Instance name (unique, e.g. "azure-hoffman-net")</label>
+    <label for="instance_name">Instance name (unique, e.g. "azure-contoso")</label>
     <input type="text" id="instance_name" name="instance_name" required>
     {% else %}
     <label>Instance name</label>

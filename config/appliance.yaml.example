@@ -3,7 +3,7 @@ acme:
   server: "https://acme-v02.api.letsencrypt.org/directory"
 
 dns_providers:
-  azure-hoffman-net:
+  azure-contoso:
     type: azure
     settings:
       tenant_id: "CHANGE-ME"
@@ -11,7 +11,7 @@ dns_providers:
       sp_client_secret: "CHANGE-ME"
       subscription_id: "CHANGE-ME"
       resource_group: "DNS_Resource_Group"
-      zone: "hoffman.net"
+      zone: "contoso.com"
       propagation_seconds: 45
 
   cloudflare-main:
@@ -33,58 +33,103 @@ dns_providers:
       remove_url: "https://dns-shim.internal.example.com/api/txt/remove"
       auth_header: "Bearer CHANGE-ME"
 
-panos_firewalls:
+# deploy_providers[]: named instances of ANY deploy target TYPE this
+# appliance supports (see deploy_providers/ -- "panos" for Palo Alto
+# firewalls, "iis" for Windows/IIS servers via WinRM, and potentially
+# more in future). Every instance has a "type" and a type-specific
+# "settings" block. Domains reference these by name in deploy_targets[]
+# below, exactly the way they reference dns_providers[] instances.
+deploy_providers:
   hq-firewall:
-    hostname: "10.10.10.1"
-    api_key: "CHANGE-ME"
-    verify_tls: false
-    cleanup_old_certs: true
+    type: panos
+    settings:
+      hostname: "10.10.10.1"
+      api_key: "CHANGE-ME"
+      verify_tls: false
+      cleanup_old_certs: true
 
   branch-firewall:
-    hostname: "10.20.10.1"
-    api_key: "CHANGE-ME"
-    verify_tls: false
-    cleanup_old_certs: true
+    type: panos
+    settings:
+      hostname: "10.20.10.1"
+      api_key: "CHANGE-ME"
+      verify_tls: false
+      cleanup_old_certs: true
+
+  # Windows/IIS server -- deployed to over WinRM (requires pywinrm on
+  # the appliance and WinRM listening on the Windows host; see README).
+  iis01-prod:
+    type: iis
+    settings:
+      hostname: "iis01.corp.example.com"
+      winrm_port: 5986
+      transport: ntlm
+      username: "CORP\\svc-acme-appliance"
+      password: "CHANGE-ME"
+      verify_tls: false
+      cert_store_location: "Cert:\\LocalMachine\\My"
+      cleanup_old_certs: true
 
 domains:
   - name: "vpn.example.com"
-    dns_provider: "azure-hoffman-net"
+    dns_provider: "azure-contoso"
     cert_name_prefix: "gp-portal-cert"
-    panos_targets:
-      - firewall: "hq-firewall"
-        ssl_tls_profile: "SSL-GP-Portal"
+    deploy_targets:
+      - target: "hq-firewall"
+        cert_field_type: "ssl_tls_profile"
+        cert_field_value: "SSL-GP-Portal"
 
   - name: "vpn2.example.com"
     dns_provider: "cloudflare-main"
     cert_name_prefix: "gp-portal-cert"
-    panos_targets:
-      - firewall: "branch-firewall"
-        ssl_tls_profile: "SSL-GP-Portal"
+    deploy_targets:
+      - target: "branch-firewall"
+        cert_field_type: "ssl_tls_profile"
+        cert_field_value: "SSL-GP-Portal"
 
   - name: "*.example.com"
     additional_names:
       - "example.com"
-    dns_provider: "azure-hoffman-net"
+    dns_provider: "azure-contoso"
     cert_name_prefix: "wildcard-example-com"
-    panos_targets:
-      - firewall: "hq-firewall"
-        ssl_tls_profile: "SSL-Wildcard-Example"
+    deploy_targets:
+      - target: "hq-firewall"
+        cert_field_type: "ssl_tls_profile"
+        cert_field_value: "SSL-Wildcard-Example"
 
   # Example: a single certificate spanning TWO DIFFERENT DNS zones/accounts.
   # The primary name (cross-zone.example.com) and any plain-string
   # additional_names use the entry's own top-level dns_provider
-  # (azure-hoffman-net here). An additional_names entry can instead be a
+  # (azure-contoso here). An additional_names entry can instead be a
   # {name, dns_provider} object to use a DIFFERENT provider for JUST that
   # one name -- as long as that provider is also configured above in
   # dns_providers[]. This lets one certificate cover names in zones/
   # accounts that no single DNS provider instance has access to.
   - name: "cross-zone.example.com"
-    dns_provider: "azure-hoffman-net"
+    dns_provider: "azure-contoso"
     additional_names:
-      - "apex-alias.example.com"                       # plain string -> uses azure-hoffman-net (same as primary)
+      - "apex-alias.example.com"                       # plain string -> uses azure-contoso (same as primary)
       - name: "partner-portal.othercompany.com"        # per-name override -> uses a different zone/account
         dns_provider: "cloudflare-main"
     cert_name_prefix: "gp-portal-cert"
-    panos_targets:
-      - firewall: "hq-firewall"
-        ssl_tls_profile: "SSL-GP-Portal"
+    deploy_targets:
+      - target: "hq-firewall"
+        cert_field_type: "ssl_tls_profile"
+        cert_field_value: "SSL-GP-Portal"
+
+  # Example: ONE certificate deployed to TWO DIFFERENT deploy target
+  # TYPES at once -- a PAN-OS firewall AND a Windows/IIS server. This is
+  # the "single pane of glass" scenario: deploy_targets[] entries can mix
+  # any instance types freely, in any combination, on the same domain.
+  - name: "portal.example.com"
+    dns_provider: "azure-contoso"
+    cert_name_prefix: "portal-cert"
+    deploy_targets:
+      - target: "hq-firewall"
+        cert_field_type: "ssl_tls_profile"
+        cert_field_value: "SSL-Portal-Profile"
+      - target: "iis01-prod"
+        site_name: "Default Web Site"
+        binding_ip: "*"
+        binding_port: 443
+        hostname: "portal.example.com"   # optional -- set for SNI-based bindings

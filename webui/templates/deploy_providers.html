@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Deploy Targets{% endblock %}
+{% block content %}
+<h1>Deploy Targets</h1>
+<p class="subtitle">Named instances (Palo Alto firewalls, Windows/IIS servers, and any future target types) that issued certificates can be deployed to.</p>
+<p><a class="btn" href="{{ url_for('deploy_provider_new') }}">+ Add deploy target</a></p>
+<table>
+  <thead><tr><th>Name</th><th>Type</th><th>Key settings</th><th>Cleanup old certs</th><th></th></tr></thead>
+  <tbody>
+  {% for name, inst in providers.items() %}
+    <tr>
+      <td class="mono">{{ name }}</td>
+      <td><span class="badge">{{ provider_labels.get(inst.type, inst.type) }}</span></td>
+      <td>
+        {% for k, v in inst.settings.items() %}
+          {% if k in ["api_key", "password"] %}
+            <div>{{ k }}: {{ mask(v) }}</div>
+          {% elif k not in ["cleanup_old_certs"] %}
+            <div>{{ k }}: {{ v }}</div>
+          {% endif %}
+        {% endfor %}
+      </td>
+      <td>{{ "Yes" if inst.settings.get("cleanup_old_certs") else "No" }}</td>
+      <td class="actions">
+        <form class="inline" method="post" action="{{ url_for('deploy_provider_test', instance_name=name) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="btn btn-secondary btn-small">Test connection</button>
+        </form>
+        <a href="{{ url_for('deploy_provider_edit', instance_name=name) }}" class="btn btn-secondary btn-small">Edit</a>
+        <form class="inline" method="post" action="{{ url_for('deploy_provider_delete', instance_name=name) }}" onsubmit="return confirm('Delete deploy target {{ name }}?');">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="btn btn-danger btn-small">Delete</button>
+        </form>
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5" class="muted">No deploy targets configured yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

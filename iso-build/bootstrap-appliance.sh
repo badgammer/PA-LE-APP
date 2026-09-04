@@ -1,13 +1,25 @@
 #!/usr/bin/env bash
 #
-# One-shot provisioning script: turns a freshly-installed, internet-
-# connected Rocky Linux 9 (minimal) box into a fully running ACME/
-# GlobalProtect appliance -- no ISO building required.
+# One-shot OS-level provisioning script: turns a freshly-installed,
+# internet-connected Rocky Linux 9 (minimal) box into a box that HAS the
+# appliance code and its prerequisites installed at /opt/acme-appliance --
+# but does NOT itself decide which install profile (single-instance vs.
+# msp-panos) to run. That decision, and everything profile-specific
+# (systemd units, service account(s)/DynamicUser, config seeding, TLS
+# cert, sudoers, firewalld) is handled by install.sh, which this script
+# calls at the very end.
 #
 # It is idempotent -- safe to re-run if a step fails partway through.
 #
 # Usage (as root):
-#   ./bootstrap-appliance.sh [/path/to/acme-appliance-source]
+#   ./bootstrap-appliance.sh [/path/to/acme-appliance-source] [-- <install.sh args>]
+#
+# Examples:
+#   ./bootstrap-appliance.sh
+#     -> copies source, installs OS packages, then runs install.sh with
+#        an interactive profile prompt.
+#   ./bootstrap-appliance.sh /tmp/acme-appliance-src -- --profile=msp-panos --non-interactive
+#     -> same, but installs (in the msp-panos profile) with no prompts.
 
 set -euo pipefail
 
@@ -17,15 +29,26 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SRC_DIR="${1:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-INSTALL_DIR="/opt/acme-appliance"
-CONFIG_DIR="/etc/acme-appliance"
-SERVICE_USER="acme-appliance"
-RUN_DIR="/var/run/acme-appliance"
 
-LE_CONFIG_DIR="$CONFIG_DIR/letsencrypt"
-LE_WORK_DIR="/var/lib/acme-appliance/letsencrypt"
-LE_LOGS_DIR="/var/log/acme-appliance/letsencrypt"
+# Split args at "--": everything before is the optional source path,
+# everything after is forwarded verbatim to install.sh.
+SRC_DIR=""
+INSTALL_ARGS=()
+SEEN_DASHDASH=false
+for arg in "$@"; do
+  if [ "$arg" = "--" ]; then
+    SEEN_DASHDASH=true
+    continue
+  fi
+  if $SEEN_DASHDASH; then
+    INSTALL_ARGS+=("$arg")
+  elif [ -z "$SRC_DIR" ]; then
+    SRC_DIR="$arg"
+  fi
+done
+SRC_DIR="${SRC_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+
+INSTALL_DIR="/opt/acme-appliance"
 
 log() { echo "[bootstrap] $*"; }
 
@@ -37,11 +60,12 @@ fi
 
 log "Installing critical OS packages (epel-release, python3, certbot, openssl)..."
 # IMPORTANT: this dnf install list contains ONLY packages this appliance
-# genuinely cannot function without. Every package in a single dnf
-# transaction must resolve successfully for ANY of them to install --
-# one broken/unavailable package aborts the WHOLE transaction, silently
-# preventing everything else in the same command (including certbot)
-# from installing too. This has bitten this script twice before:
+# genuinely cannot function without, under EITHER install profile. Every
+# package in a single dnf transaction must resolve successfully for ANY
+# of them to install -- one broken/unavailable package aborts the WHOLE
+# transaction, silently preventing everything else in the same command
+# (including certbot) from installing too. This has bitten this script
+# twice before:
 #   - "python3-venv" isn't a real package on Rocky/RHEL (venv ships
 #     inside base python3) -- listing it here previously broke this
 #     exact transaction.
@@ -79,13 +103,16 @@ log "  $(certbot --version 2>&1)"
 log "Installing optional OS packages (each in its own transaction -- a failure here is logged as a warning and does NOT abort setup)..."
 
 # dnf-utils (yum-utils) provides "needs-restarting", used only by the web
-# UI's System Updates page to detect whether a reboot is required after
-# applying updates. Not installing this just means that one detail is
-# reported as "unknown" instead of yes/no -- everything else still works.
+# UI's System Updates page (single-instance profile only) to detect
+# whether a reboot is required after applying updates. Not installing
+# this just means that one detail is reported as "unknown" instead of
+# yes/no -- everything else still works. Harmless to install even under
+# the msp-panos profile, where System Updates is disabled entirely.
 if ! dnf install -y dnf-utils; then
   log "  WARNING: could not install dnf-utils. The System Updates page's"
   log "  'reboot required?' detection will show 'unknown' instead of"
   log "  yes/no, but updates can still be checked/applied normally."
+  log "  (Not applicable at all if you go on to install the msp-panos profile.)"
 fi
 
 # policycoreutils-python-utils provides 'semanage', which would only ever
@@ -102,99 +129,41 @@ fi
 if ! dnf install -y policycoreutils-python-utils; then
   log "  WARNING: could not install policycoreutils-python-utils (this is"
   log "  OPTIONAL and not required for the appliance to run -- see the"
-  log "  comment in this script / README for why). If the web UI later"
-  log "  fails to bind to port 8443 under SELinux enforcing mode (check"
-  log "  'journalctl -t setroubleshoot' or 'ausearch -m avc -ts recent'"
-  log "  for AVC denials), install this package manually and run:"
-  log "    semanage port -a -t http_port_t -p tcp 8443"
+  log "  comment in this script / README for why). If a web UI instance"
+  log "  later fails to bind to its port under SELinux enforcing mode"
+  log "  (check 'journalctl -t setroubleshoot' or 'ausearch -m avc -ts"
+  log "  recent' for AVC denials), install this package manually and run:"
+  log "    semanage port -a -t http_port_t -p tcp <port>"
   log "  (use -m instead of -a if that port is already assigned a"
   log "  different type on your system)."
 fi
-
-log "Creating service account '$SERVICE_USER' (if needed)..."
-id -u "$SERVICE_USER" &>/dev/null || useradd --system --home "$INSTALL_DIR" --shell /sbin/nologin "$SERVICE_USER"
 
 log "Copying appliance source to $INSTALL_DIR..."
 mkdir -p "$INSTALL_DIR"
 find "$SRC_DIR" -mindepth 1 -maxdepth 1 \
   ! -name venv ! -name .git ! -name iso-build \
   -exec cp -r {} "$INSTALL_DIR"/ \;
+# iso-build/ is deliberately excluded from the copy above (it is only
+# ever needed on a BUILD machine, not the running appliance) EXCEPT for
+# install.sh, lib/, systemd/, bin/, and deploy/ at the repo root, which
+# this script copies explicitly below since install.sh runs FROM
+# $INSTALL_DIR from this point on.
+cp -r "$SRC_DIR/install.sh" "$INSTALL_DIR/install.sh" 2>/dev/null || true
+cp -r "$SRC_DIR/lib" "$INSTALL_DIR/lib" 2>/dev/null || true
+chmod +x "$INSTALL_DIR/install.sh" "$INSTALL_DIR"/lib/*.sh 2>/dev/null || true
 
-log "Creating Python virtual environment and installing dependencies..."
+log "Creating Python virtual environment (dependency installation happens in install.sh, since which requirements file(s) get installed depends on the chosen profile)..."
 if [ ! -d "$INSTALL_DIR/venv" ]; then
   python3 -m venv "$INSTALL_DIR/venv"
 fi
 "$INSTALL_DIR/venv/bin/pip" install --upgrade pip --quiet
-"$INSTALL_DIR/venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt" --quiet
 
-log "Setting permissions..."
+log "Setting execute permissions on scripts..."
 chmod +x "$INSTALL_DIR"/bin/*.sh \
          "$INSTALL_DIR"/dns_dispatcher.py \
-         "$INSTALL_DIR"/deploy_to_panos.py
-chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
-
-log "Creating config/log/runtime directories with correct ownership..."
-mkdir -p "$CONFIG_DIR" "$CONFIG_DIR/backups" "$CONFIG_DIR/webui-tls" "$RUN_DIR"
-touch /var/log/acme-appliance.log
-chown -R "$SERVICE_USER:$SERVICE_USER" "$CONFIG_DIR" /var/log/acme-appliance.log "$RUN_DIR"
-chmod 700 "$CONFIG_DIR"
-
-log "Creating certbot's own config/work/logs directories (appliance-owned)..."
-mkdir -p "$LE_CONFIG_DIR" "$LE_WORK_DIR" "$LE_LOGS_DIR"
-chown -R "$SERVICE_USER:$SERVICE_USER" "$LE_CONFIG_DIR" "$LE_WORK_DIR" "$LE_LOGS_DIR"
-
-if [ ! -f "$CONFIG_DIR/appliance.yaml" ]; then
-  log "No appliance.yaml found -- installing the example template."
-  cp "$INSTALL_DIR/config/appliance.yaml.example" "$CONFIG_DIR/appliance.yaml"
-  chown "$SERVICE_USER:$SERVICE_USER" "$CONFIG_DIR/appliance.yaml"
-  chmod 600 "$CONFIG_DIR/appliance.yaml"
-fi
-
-log "Generating self-signed TLS certificate for the web UI (if not already present)..."
-sudo -u "$SERVICE_USER" "$INSTALL_DIR/bin/generate-selfsigned-cert.sh" "$(hostname -f 2>/dev/null || hostname)"
-
-log "Installing systemd units..."
-cp "$INSTALL_DIR"/systemd/*.service "$INSTALL_DIR"/systemd/*.timer /etc/systemd/system/
-systemctl daemon-reload
-
-log "Installing the sudoers rule for the System Updates feature..."
-SUDOERS_SRC="$INSTALL_DIR/iso-build/sudoers.d/acme-appliance-updates"
-SUDOERS_DST="/etc/sudoers.d/acme-appliance-updates"
-if [ -f "$SUDOERS_SRC" ]; then
-  install -m 0440 -o root -g root "$SUDOERS_SRC" "$SUDOERS_DST"
-  if command -v visudo >/dev/null 2>&1; then
-    if ! visudo -c -f "$SUDOERS_DST" >/dev/null; then
-      echo "ERROR: the installed sudoers file at $SUDOERS_DST failed validation -- removing it." >&2
-      rm -f "$SUDOERS_DST"
-    else
-      log "  sudoers rule installed and validated OK."
-    fi
-  fi
-else
-  log "  WARNING: $SUDOERS_SRC not found -- System Updates feature will not work."
-fi
-
-log "Opening firewalld port 8443/tcp for the web UI (if firewalld is active)..."
-if systemctl is-active --quiet firewalld; then
-  firewall-cmd --permanent --add-port=8443/tcp
-  firewall-cmd --reload
-else
-  log "firewalld is not active -- skipping (open port 8443 manually if you enable a firewall later)."
-fi
-
-log "Enabling and starting services..."
-systemctl enable --now acme-webui.service
-systemctl enable --now acme-renew.timer
+         "$INSTALL_DIR"/deploy_certificate.py
 
 log ""
-log "==================================================================="
-log " Done. Web UI should now be reachable at:"
-log "   https://$(hostname -I 2>/dev/null | awk '{print $1}'):8443/"
+log "OS-level setup complete. Handing off to install.sh for profile-specific setup..."
 log ""
-log " First visit will prompt you to create the admin account."
-log " Visit Settings to set a real acme.email before your first renewal."
-log "==================================================================="
-log ""
-log "Check status with:"
-log "  systemctl status acme-webui.service acme-renew.timer"
-log "  journalctl -u acme-webui.service -n 50 --no-pager"
+exec "$INSTALL_DIR/install.sh" "${INSTALL_ARGS[@]}"

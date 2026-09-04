@@ -2,8 +2,9 @@
 #
 # Main entry point: issues/renews a Let's Encrypt certificate for every
 # domain in appliance.yaml (or just one) using DNS-01 validation (via
-# dns_dispatcher.py) and deploys the result to Palo Alto via
-# deploy_to_panos.py.
+# dns_dispatcher.py) and deploys the result to every configured deploy
+# target (PAN-OS firewall, IIS server, etc. -- see deploy_providers/) via
+# deploy_certificate.py.
 #
 # Usage:
 #   acme-renew.sh                     # process every configured domain entry
@@ -139,7 +140,7 @@ while IFS=$'\t' read -r CERT_NAME ENTRY_NAME NAME_LIST; do
       --manual $IP_LOGGING_FLAG \
       --manual-auth-hook "$APPLIANCE_DIR/dns_dispatcher.py add" \
       --manual-cleanup-hook "$APPLIANCE_DIR/dns_dispatcher.py remove" \
-      --deploy-hook "$APPLIANCE_DIR/deploy_to_panos.py" \
+      --deploy-hook "$APPLIANCE_DIR/deploy_certificate.py" \
       --config-dir "$LE_CONFIG_DIR" \
       --work-dir "$LE_WORK_DIR" \
       --logs-dir "$LE_LOGS_DIR" \
