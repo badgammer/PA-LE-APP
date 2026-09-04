@@ -3,7 +3,7 @@ acme:
   server: "https://acme-v02.api.letsencrypt.org/directory"
 
 dns_providers:
-  azure-hoffman-net:
+  azure-contoso:
     type: azure
     settings:
       tenant_id: "CHANGE-ME"
@@ -11,7 +11,7 @@ dns_providers:
       sp_client_secret: "CHANGE-ME"
       subscription_id: "CHANGE-ME"
       resource_group: "DNS_Resource_Group"
-      zone: "hoffman.net"
+      zone: "contoso.com"
       propagation_seconds: 45
 
   cloudflare-main:
@@ -72,7 +72,7 @@ deploy_providers:
 
 domains:
   - name: "vpn.example.com"
-    dns_provider: "azure-hoffman-net"
+    dns_provider: "azure-contoso"
     cert_name_prefix: "gp-portal-cert"
     deploy_targets:
       - target: "hq-firewall"
@@ -90,7 +90,7 @@ domains:
   - name: "*.example.com"
     additional_names:
       - "example.com"
-    dns_provider: "azure-hoffman-net"
+    dns_provider: "azure-contoso"
     cert_name_prefix: "wildcard-example-com"
     deploy_targets:
       - target: "hq-firewall"
@@ -100,15 +100,15 @@ domains:
   # Example: a single certificate spanning TWO DIFFERENT DNS zones/accounts.
   # The primary name (cross-zone.example.com) and any plain-string
   # additional_names use the entry's own top-level dns_provider
-  # (azure-hoffman-net here). An additional_names entry can instead be a
+  # (azure-contoso here). An additional_names entry can instead be a
   # {name, dns_provider} object to use a DIFFERENT provider for JUST that
   # one name -- as long as that provider is also configured above in
   # dns_providers[]. This lets one certificate cover names in zones/
   # accounts that no single DNS provider instance has access to.
   - name: "cross-zone.example.com"
-    dns_provider: "azure-hoffman-net"
+    dns_provider: "azure-contoso"
     additional_names:
-      - "apex-alias.example.com"                       # plain string -> uses azure-hoffman-net (same as primary)
+      - "apex-alias.example.com"                       # plain string -> uses azure-contoso (same as primary)
       - name: "partner-portal.othercompany.com"        # per-name override -> uses a different zone/account
         dns_provider: "cloudflare-main"
     cert_name_prefix: "gp-portal-cert"
@@ -122,7 +122,7 @@ domains:
   # the "single pane of glass" scenario: deploy_targets[] entries can mix
   # any instance types freely, in any combination, on the same domain.
   - name: "portal.example.com"
-    dns_provider: "azure-hoffman-net"
+    dns_provider: "azure-contoso"
     cert_name_prefix: "portal-cert"
     deploy_targets:
       - target: "hq-firewall"

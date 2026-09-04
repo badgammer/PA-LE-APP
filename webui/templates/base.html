@@ -16,7 +16,9 @@
     <a href="{{ url_for('dns_providers_list') }}">DNS Providers</a>
     <a href="{{ url_for('deploy_providers_list') }}">Deploy Targets</a>
     <a href="{{ url_for('settings_page') }}">Settings</a>
+    {% if system_updates_enabled %}
     <a href="{{ url_for('system_page') }}">System</a>
+    {% endif %}
     <a href="{{ url_for('logs') }}">Logs</a>
     <a href="{{ url_for('account') }}">{{ current_user }}</a>
     <a href="{{ url_for('logout') }}">Log out</a>

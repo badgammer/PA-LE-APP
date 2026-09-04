@@ -35,6 +35,21 @@ from deploy_providers import INSTANCE_FIELDS, TARGET_FIELDS  # noqa: E402
 from cert_naming import safe_cert_name  # noqa: E402
 
 APPLIANCE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Which install profile this instance is running under (see install.sh /
+# lib/profile-*.sh at the repo root, and deploy_providers/__init__.py's
+# matching ACME_APPLIANCE_PROFILE-based filtering). Currently the ONLY
+# other thing this gates, besides which deploy provider types are
+# available, is the System Updates feature below -- it operates on the
+# shared HOST (dnf update -y, reboot) via a sudoers rule tied to a single
+# fixed service account and a relaxed NoNewPrivileges setting for PAM
+# access, neither of which has a safe per-tenant equivalent under
+# msp-panos, so it is unconditionally disabled for that profile rather
+# than merely hidden -- see system_page()/system_check()/system_apply()/
+# system_reboot() below.
+INSTALLED_PROFILE = os.environ.get("ACME_APPLIANCE_PROFILE", "single-instance").strip() or "single-instance"
+SYSTEM_UPDATES_ENABLED = INSTALLED_PROFILE != "msp-panos"
+
 LOG_PATH = os.environ.get("ACME_APPLIANCE_LOG", "/var/log/acme-appliance.log")
 RENEW_LOCK_DIR = os.environ.get("ACME_APPLIANCE_RENEW_LOCK_DIR", "/var/run/acme-appliance")
 LETSENCRYPT_LIVE_DIR = os.environ.get(
@@ -102,7 +117,10 @@ def check_csrf():
 
 @app.context_processor
 def inject_globals():
-    return {"csrf_token": csrf_token, "current_user": current_user()}
+    return {
+        "csrf_token": csrf_token, "current_user": current_user(),
+        "system_updates_enabled": SYSTEM_UPDATES_ENABLED,
+    }
 
 
 def mask(value: str) -> str:
@@ -924,9 +942,27 @@ def deploy_provider_test(instance_name):
     return redirect(url_for("deploy_providers_list"))
 
 
+def _require_system_updates_enabled():
+    """
+    The System Updates feature (OS package checks/updates, reboot)
+    operates on the shared HOST, not per-tenant, via a sudoers rule tied
+    to a single fixed service account (see
+    iso-build/sudoers.d/acme-appliance-updates) and a relaxed
+    NoNewPrivileges setting needed for PAM step-up auth. Neither has a
+    safe per-customer equivalent under the msp-panos profile (where each
+    customer instance runs as its OWN system account, and that sudoers
+    rule is never installed for this profile at all -- see
+    lib/profile-msp-panos.sh) -- so every route below refuses outright
+    rather than silently failing partway through a privileged action.
+    """
+    if not SYSTEM_UPDATES_ENABLED:
+        abort(404, "The System Updates feature is not available under the msp-panos install profile.")
+
+
 @app.route("/system")
 @login_required
 def system_page():
+    _require_system_updates_enabled()
     return render_template(
         "system.html",
         check_status=system_updates.get_check_status(),
@@ -940,6 +976,7 @@ def system_page():
 @app.route("/system/check", methods=["POST"])
 @login_required
 def system_check():
+    _require_system_updates_enabled()
     check_csrf()
     ok, message = system_updates.trigger_check()
     flash(message, "success" if ok else "error")
@@ -949,6 +986,7 @@ def system_check():
 @app.route("/system/apply", methods=["POST"])
 @login_required
 def system_apply():
+    _require_system_updates_enabled()
     check_csrf()
     username = request.form.get("sudo_username", "")
     password = request.form.get("sudo_password", "")
@@ -965,6 +1003,7 @@ def system_apply():
 @app.route("/system/reboot", methods=["POST"])
 @login_required
 def system_reboot():
+    _require_system_updates_enabled()
     check_csrf()
     username = request.form.get("sudo_username", "")
     password = request.form.get("sudo_password", "")

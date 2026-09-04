@@ -1,0 +1,70 @@
+[Unit]
+Description=ACME Certificate Appliance web UI -- customer instance %i
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+# Each customer instance runs as its OWN dedicated system account
+# (acmecust-<slug>, created by bin/msp-provision-customer.sh exactly the
+# way bootstrap-appliance.sh creates the single "acme-appliance" account
+# for the single-instance profile) -- never a shared account across
+# customers, and never the DynamicUser mechanism, so that ownership of
+# every path below is explicit, inspectable with plain `ls -l`, and
+# consistent with how this appliance already establishes identity
+# elsewhere in this codebase.
+User=acmecust-%i
+Group=acmecust-%i
+WorkingDirectory=/opt/acme-appliance/webui
+
+Environment=ACME_APPLIANCE_PROFILE=msp-panos
+Environment=ACME_APPLIANCE_CONFIG=/etc/acme-appliance/customers/%i/appliance.yaml
+Environment=ACME_APPLIANCE_USERS=/etc/acme-appliance/customers/%i/users.yaml
+Environment=ACME_APPLIANCE_SECRET_KEY_FILE=/etc/acme-appliance/customers/%i/webui_secret_key
+Environment=ACME_APPLIANCE_LOG=/var/log/acme-appliance/customers/%i.log
+Environment=ACME_APPLIANCE_RENEW_LOCK_DIR=/run/acme-appliance/%i
+Environment=ACME_APPLIANCE_LE_LIVE_DIR=/etc/acme-appliance/customers/%i/letsencrypt/live
+# ACME_APPLIANCE_LE_CONFIG_DIR / _WORK_DIR / _LOGS_DIR are consumed by
+# bin/acme-renew.sh and bin/redeploy-cert.sh when the "Renew now" /
+# "Redeploy" buttons spawn them as CHILD processes of THIS unit -- they
+# inherit this unit's sandboxing (User, ReadWritePaths), not
+# acme-renew@.service's, exactly as documented in the single-instance
+# acme-webui.service unit this one mirrors.
+Environment=ACME_APPLIANCE_LE_CONFIG_DIR=/etc/acme-appliance/customers/%i/letsencrypt
+Environment=ACME_APPLIANCE_LE_WORK_DIR=/var/lib/acme-appliance/customers/%i/letsencrypt
+Environment=ACME_APPLIANCE_LE_LOGS_DIR=/var/log/acme-appliance/customers/%i/letsencrypt
+# ACME_APPLIANCE_UI_TLS is left at its default ("1") -- nginx terminates
+# real TLS in front of the unix socket this binds to (see
+# deploy/nginx/acme-appliance-msp.conf.template), so Flask should still
+# mark session cookies Secure even though gunicorn itself only ever sees
+# plaintext HTTP over that socket.
+RuntimeDirectory=acme-appliance/%i
+RuntimeDirectoryMode=0750
+
+ExecStart=/opt/acme-appliance/venv/bin/gunicorn \
+    --workers 2 \
+    --bind unix:/run/acme-appliance/%i/webui.sock \
+    --umask 0117 \
+    --access-logfile /var/log/acme-appliance/customers/%i-access.log \
+    app:app
+Restart=on-failure
+RestartSec=5
+
+# NOTE: unlike the single-instance acme-webui.service, this unit CAN set
+# NoNewPrivileges=true -- the System Updates feature (the only reason
+# the single-instance unit needs to allow new privileges, for PAM/sudo)
+# is unconditionally disabled under the msp-panos profile (see
+# webui/app.py's SYSTEM_UPDATES_ENABLED), so no per-customer instance
+# ever needs to invoke a setuid-root helper or sudo. This is a genuine
+# additional hardening this profile gets essentially for free.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/etc/acme-appliance/customers/%i /var/lib/acme-appliance/customers/%i /var/log/acme-appliance/customers /run/acme-appliance/%i
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target
