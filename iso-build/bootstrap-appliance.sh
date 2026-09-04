@@ -153,11 +153,32 @@ find "$SRC_DIR" -mindepth 1 -maxdepth 1 \
   -exec cp -r {} "$INSTALL_DIR"/ \;
 # iso-build/ is deliberately excluded from the copy above (it is only
 # ever needed on a BUILD machine, not the running appliance) EXCEPT for
-# install.sh, lib/, systemd/, bin/, and deploy/ at the repo root, which
-# this script copies explicitly below since install.sh runs FROM
-# $INSTALL_DIR from this point on.
+# install.sh, lib/, systemd/, bin/, and deploy/ at the repo root (all
+# copied by the find above already, since they live outside iso-build/),
+# PLUS three things that live INSIDE iso-build/ but are still needed on
+# the running appliance and must be copied back in explicitly:
+#   - iso-build/'s own install.sh/lib/ re-copy below (install.sh runs
+#     FROM $INSTALL_DIR from this point on)
+#   - iso-build/sudoers.d/ -- BOTH install profile scripts
+#     (lib/profile-single-instance.sh for acme-appliance-updates, and
+#     lib/profile-msp-panos.sh for acme-msp-console) read their sudoers
+#     rule source file from $INSTALL_DIR/iso-build/sudoers.d/<name> at
+#     install time. Forgetting this copy means that lookup silently
+#     fails (a plain `[[ -f "$sudoers_src" ]]` check, not a hard error)
+#     and BOTH profiles' privileged-action sudoers rule never gets
+#     installed at all -- the affected service account
+#     (acme-appliance or acme-msp-console) ends up with ZERO sudo
+#     grants, and every privileged action it tries then fails
+#     identically with "sudo: a password is required". This is easy to
+#     miss in installer scrollback (it only prints a WARNING, doesn't
+#     abort) and only actually surfaces later when someone clicks a
+#     privileged action (Apply updates/Reboot on single-instance;
+#     restart web UI/tail log/provision/deprovision on msp-panos) in
+#     whichever UI is affected.
 cp -r "$SRC_DIR/install.sh" "$INSTALL_DIR/install.sh" 2>/dev/null || true
 cp -r "$SRC_DIR/lib" "$INSTALL_DIR/lib" 2>/dev/null || true
+mkdir -p "$INSTALL_DIR/iso-build"
+cp -r "$SRC_DIR/iso-build/sudoers.d" "$INSTALL_DIR/iso-build/" 2>/dev/null || true
 chmod +x "$INSTALL_DIR/install.sh" "$INSTALL_DIR"/lib/*.sh 2>/dev/null || true
 
 log "Creating Python virtual environment (dependency installation happens in install.sh, since which requirements file(s) get installed depends on the chosen profile)..."
