@@ -39,6 +39,22 @@ CUSTOMER_ETC_DIR="/etc/acme-appliance/customers/$SLUG"
 CUSTOMER_VAR_DIR="/var/lib/acme-appliance/customers/$SLUG"
 CUSTOMER_LOG_DIR="/var/log/acme-appliance/customers/$SLUG"
 CUSTOMER_LOG_FILE="/var/log/acme-appliance/customers/$SLUG.log"
+# Matches systemd/msp/acme-webui@.service's --access-logfile path EXACTLY
+# (/var/log/acme-appliance/customers/%i-access.log). gunicorn runs as
+# this customer's OWN dedicated account (acmecust-<slug>), and the
+# PARENT directory (/var/log/acme-appliance/customers/) is shared and
+# owned root:root mode 0755 -- so that account can write to an EXISTING
+# file there (needs only write permission on the file itself), but
+# cannot CREATE a brand-new one (that requires write permission on the
+# directory, which only root has). Without pre-creating and chowning
+# this file here -- exactly the same way CUSTOMER_LOG_FILE below already
+# is -- gunicorn's first attempt to open it for its own access log fails
+# with PermissionError, and the whole acme-webui@<slug>.service unit
+# exits immediately with status=1/FAILURE on every single start,
+# including every subsequent "Restart" (systemd will even hit its
+# start-limit and refuse to keep retrying if this goes unnoticed for a
+# few seconds). This was a real, reproduced bug -- not hypothetical.
+CUSTOMER_ACCESS_LOG_FILE="/var/log/acme-appliance/customers/$SLUG-access.log"
 CUSTOMER_RUN_DIR="/run/acme-appliance/$SLUG"
 
 if [[ ! -f /etc/acme-appliance/profile ]] || [[ "$(cat /etc/acme-appliance/profile)" != "msp-panos" ]]; then
@@ -65,6 +81,9 @@ install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_USER" "$CUSTOMER_RUN_DIR"
 touch "$CUSTOMER_LOG_FILE"
 chown "$SERVICE_USER:$SERVICE_USER" "$CUSTOMER_LOG_FILE"
 chmod 600 "$CUSTOMER_LOG_FILE"
+touch "$CUSTOMER_ACCESS_LOG_FILE"
+chown "$SERVICE_USER:$SERVICE_USER" "$CUSTOMER_ACCESS_LOG_FILE"
+chmod 600 "$CUSTOMER_ACCESS_LOG_FILE"
 
 echo "  Seeding starter appliance.yaml..."
 if [[ -f "$APPLIANCE_DIR/config/appliance.yaml.example" ]]; then

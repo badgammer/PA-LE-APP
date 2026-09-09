@@ -506,4 +506,101 @@ iso-build/README.md
   host with a real root user -- both call for the same kind of one-time
   validation on an actual target box before production use.
 
+---
+
+## Change Tree -- Two Live-Reported Bug Fixes (MSP Console Deployment)
+
+Baseline: this same repo, as re-uploaded after real-world use of the
+MSP Console on a live msp-panos host surfaced two distinct, previously
+untested failure modes. Both were reproduced in isolation before being
+fixed, and both fixes were re-verified end-to-end against the actual
+files in this upload (not a reconstruction).
+
+### ~ Modified files
+
+```
+iso-build/bootstrap-appliance.sh
+  - Added a copy step for iso-build/sudoers.d/ into the installed
+    /opt/acme-appliance/iso-build/ tree, alongside the existing
+    install.sh/lib/ re-copy exceptions to the iso-build/ exclusion.
+  - BUG: both lib/profile-single-instance.sh (for
+    iso-build/sudoers.d/acme-appliance-updates) and
+    lib/profile-msp-panos.sh (for
+    iso-build/sudoers.d/acme-msp-console) read their sudoers rule
+    source file from $INSTALL_DIR/iso-build/sudoers.d/<name> at
+    install time -- but bootstrap-appliance.sh never copied that
+    directory into the installed tree, only install.sh and lib/ were
+    special-cased back in after the broader iso-build/ exclusion. The
+    `[[ -f "$sudoers_src" ]]` check in both profile scripts silently
+    failed (prints a WARNING, does not abort), leaving the affected
+    service account (acme-appliance or acme-msp-console) with ZERO
+    sudo grants. Every privileged action that account tried afterward
+    failed identically with "sudo: a password is required" -- this
+    surfaced in production as the MSP Console's "Restart web UI" and
+    log-tail actions both failing with that exact message.
+  - REPRODUCED: confirmed in isolation (a fake source tree missing this
+    copy step reliably failed to produce iso-build/sudoers.d/* in the
+    installed tree) before fixing, and re-verified end-to-end afterward
+    by running the actual (now-fixed) bootstrap-appliance.sh through to
+    install.sh --profile=msp-panos and confirming both sudoers source
+    files land correctly and get installed + visudo-validated.
+
+bin/msp-provision-customer.sh
+  - Added CUSTOMER_ACCESS_LOG_FILE
+    (/var/log/acme-appliance/customers/<slug>-access.log), pre-created
+    and chowned to the customer's dedicated account exactly the same
+    way CUSTOMER_LOG_FILE already was.
+  - BUG: systemd/msp/acme-webui@.service's gunicorn ExecStart uses
+    --access-logfile pointing at that exact path, but nothing ever
+    pre-created it. The customer's account (acmecust-<slug>) can write
+    to an EXISTING file in the shared, root-owned
+    /var/log/acme-appliance/customers/ directory, but cannot CREATE a
+    brand-new one there (that requires write permission on the
+    directory itself, which only root has under its 0755 mode) --
+    gunicorn's very first attempt to open its own access log for
+    writing therefore failed with a PermissionError, and the entire
+    acme-webui@<slug>.service unit exited immediately on every single
+    start attempt, including every subsequent "Restart" click.
+  - REPRODUCED: confirmed the exact POSIX permission mechanics with a
+    directory-permission test before fixing, and re-verified end-to-end
+    afterward by actually running the real (now-fixed)
+    msp-provision-customer.sh script and confirming both the main log
+    file and the access log file are pre-created, chowned, and
+    permissioned identically.
+```
+
+### Design notes worth knowing
+
+- **Both bugs were live production reports, not hypotheticals.** The
+  first surfaced as literal "sudo: a password is required" errors
+  visible in the MSP Console's own UI (log tail and restart-web-UI
+  actions); the second surfaced as a customer's web UI staying down
+  even after an explicit restart, with the underlying
+  `journalctl -u acme-webui@<slug>.service` output showing gunicorn's
+  own error: `Error: '/var/log/acme-appliance/customers/<slug>-access.log'
+  isn't writable [PermissionError(13, 'Permission denied')]`.
+- **Neither bug was caught by any of the prior testing passes** because
+  every earlier dry run either stubbed out `useradd`/`chown` entirely
+  (masking the real ownership semantics that Fix #2 depends on) or
+  never exercised the FULL bootstrap-appliance.sh -> install.sh chain
+  in one continuous run against the literal source tree about to be
+  uploaded (which is what Fix #1's gap actually required to surface).
+  This pass's re-verification specifically closes both of those gaps:
+  Fix #1 was checked with a full, continuous
+  bootstrap-appliance.sh -> install.sh --profile=msp-panos run against
+  a real copy of the exact uploaded source tree, and Fix #2 was checked
+  by literally executing the real, now-patched
+  bin/msp-provision-customer.sh script rather than reasoning about it.
+- **Immediate remediation for hosts already affected by either bug**
+  (i.e. provisioned/installed before this fix) is NOT automatic --
+  these are install-time/provision-time fixes, so any customer already
+  provisioned with the old script, or any host already bootstrapped
+  with the old install flow, needs the missing file(s) created by hand
+  once (re-installing the sudoers file from this corrected repo, and/or
+  creating+chowning the missing `<slug>-access.log` file for each
+  already-provisioned customer). Re-running the corrected scripts going
+  forward prevents the issue for any NEW customer or NEW host from this
+  point on.
+
+
 
