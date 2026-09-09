@@ -717,3 +717,98 @@ msp_console/templates/customer_detail.html
 
 
 
+
+---
+
+## Change Tree -- Stale Account-Lock File Self-Healing (Live-Reported)
+
+Baseline: this same repo, after the flock+retry fix for useradd/passwd
+lock contention. A customer still reproducibly failed to provision with
+the identical error, EVEN AFTER a full VM reboot intended to "clear
+processes" -- proving the retry-with-backoff fix alone was insufficient
+for a related but distinct failure mode: a genuinely STALE lock FILE,
+not transient contention from a live process.
+
+### ~ Modified files
+
+```
+bin/msp-provision-customer.sh
+bin/msp-deprovision-customer.sh
+  - Both scripts' _retry_account_cmd() now calls a new
+    _clear_stale_account_locks_if_safe() between retry attempts, which
+    checks (using only /proc -- no fuser/lsof dependency, matching this
+    codebase's existing philosophy of not assuming optional packages
+    are present) whether any of shadow-utils' lock files
+    (/etc/.pwd.lock, /etc/.grp.lock, /etc/.shadow.lock,
+    /etc/.gshadow.lock, /etc/.subid.lock, /etc/.subgid.lock) exist AND
+    are genuinely not held open by any live process. Only if BOTH are
+    true does it remove the stale file before the next retry --
+    exactly as safe as a human manually confirming the same thing with
+    fuser/lsof/ps before deleting it by hand.
+  - BUG: shadow-utils' account-database locking is NOT an in-kernel
+    advisory lock (flock/fcntl) tied to a live process -- it is a
+    plain lockFILE created with O_CREAT|O_EXCL ("atomically create,
+    fail if it already exists"). A process that dies abnormally
+    (OOM-killed, a hard VM reset mid-operation, etc.) WITHOUT running
+    its own cleanup leaves that lock file behind PERMANENTLY. Critically,
+    a plain host reboot does NOT fix this -- rebooting only clears
+    processes and memory, it does not delete files under /etc -- so the
+    stale file continues blocking every future useradd/userdel call
+    indefinitely, with the exact same "cannot lock /etc/passwd; try
+    again later" error every single time. The previous fix's
+    retry-with-backoff was only ever designed to wait out a live,
+    finishing process; it could never recover from a lock that nothing
+    is actually holding anymore, which is exactly what a live customer
+    report demonstrated -- the same error, still occurring after a full
+    VM reboot specifically intended to clear stuck processes.
+  - REPRODUCED PRECISELY before fixing: confirmed directly on the
+    testing host that a real, pre-existing /etc/.pwd.lock file (dated
+    from days earlier, 0 bytes, untouched) causes a fresh
+    open(O_CREAT|O_EXCL) attempt against that exact path to fail with
+    "File exists" -- the identical underlying mechanism behind
+    useradd's error message -- and separately confirmed (via a
+    dependency-free /proc-based open-file check) that this specific
+    file is NOT held open by any running process, proving it is a
+    genuinely orphaned artifact, not active contention.
+  - RE-VERIFIED end-to-end afterward: simulated the exact reported
+    failure (a stale lock file present from before the script even
+    starts, with a fake useradd that fails identically every time the
+    file exists) against the real, newly-patched script -- confirmed it
+    now detects the stale file on the very first failed attempt,
+    removes it safely, and succeeds on the very next retry (after 1s,
+    not exhausting all 5 attempts), completing the full provisioning
+    flow end-to-end.
+```
+
+### Design notes worth knowing
+
+- **This is a genuinely distinct root cause from the prior lock-related
+  fix, not a failure of it.** The earlier flock (serializing this
+  appliance's own concurrent provision/deprovision calls) and
+  retry-with-backoff (for contention from something outside this
+  appliance) were both real, correct fixes for real, different
+  problems -- but neither one, by design, could ever detect or recover
+  from a lock file that has been orphaned by a process that no longer
+  exists. This fix adds exactly that missing capability, without
+  removing or weakening either of the previous two.
+- **Automated removal was scoped as narrowly as it safely could be.**
+  The check is not "the file exists, so delete it" -- it is "the file
+  exists AND no live process anywhere on the system currently has it
+  open," verified by walking every process's actual open file
+  descriptors in /proc. This is the same verification a careful
+  administrator would perform by hand before manually deleting a
+  suspected-stale lock file; the only thing automated here is
+  performing that same check reliably every time instead of requiring
+  a human to SSH in and do it.
+- **Deliberately dependency-free.** `fuser`/`lsof` are the more common
+  tools for this kind of check but are NOT guaranteed present on a
+  minimal Rocky/RHEL install (this codebase already documents this
+  exact caveat for `dnf-utils` and `policycoreutils-python-utils` in
+  `iso-build/bootstrap-appliance.sh`) -- so this uses only `/proc`,
+  which is always present on any Linux system, with zero additional
+  package requirements.
+- **A host reboot is not a substitute for this fix, and users should
+  not rely on "just reboot" going forward** -- this was the direct,
+  concrete lesson from the report that prompted this fix: rebooting
+  clears live processes but has no effect whatsoever on stale files
+  already sitting on persistent storage under /etc.

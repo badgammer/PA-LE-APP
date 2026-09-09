@@ -50,6 +50,69 @@ if ! flock -w 30 9; then
     exit 1
 fi
 
+# /etc/passwd (etc.) locking in shadow-utils is NOT an in-kernel
+# advisory lock tied to a live process -- it is a plain lockFILE
+# (/etc/.pwd.lock, /etc/.grp.lock, /etc/.shadow.lock, /etc/.gshadow.lock,
+# /etc/.subid.lock, /etc/.subgid.lock), created with O_CREAT|O_EXCL
+# ("atomically create, fail if it already exists"). This means a
+# process that dies WITHOUT running its own cleanup (killed by OOM, a
+# hard VM reset mid-operation, etc.) leaves that lock file behind
+# PERMANENTLY -- a plain reboot only clears processes/memory, it does
+# NOT delete files under /etc, so the stale file continues blocking
+# every future useradd/userdel call indefinitely, with the exact same
+# "cannot lock /etc/passwd; try again later" error every time. Plain
+# retries (below) can NEVER recover from this on their own -- there is
+# nothing running that will ever finish and release a lock that isn't
+# actually held by anyone anymore.
+#
+# _stale_lock_files() therefore checks, using ONLY /proc (no fuser/lsof
+# dependency -- neither is guaranteed present on a minimal install,
+# matching this codebase's existing dnf-utils/policycoreutils
+# philosophy), whether any of these lock files exist AND are genuinely
+# not held open by any live process. Only if BOTH are true does
+# _retry_account_cmd remove the stale file itself before retrying --
+# this is exactly as safe as a human manually verifying "is anything
+# actually using this?" before deleting it by hand, just automated.
+_ACCOUNT_LOCK_CANDIDATES=(
+    /etc/.pwd.lock /etc/.grp.lock /etc/.shadow.lock /etc/.gshadow.lock
+    /etc/.subid.lock /etc/.subgid.lock
+)
+
+_file_is_open_by_any_process() {
+    local target pid fd link
+    target="$(readlink -f "$1" 2>/dev/null)" || return 1
+    [[ -z "$target" ]] && return 1
+    for pid in /proc/[0-9]*; do
+        [[ -d "$pid/fd" ]] || continue
+        for fd in "$pid"/fd/*; do
+            link="$(readlink -f "$fd" 2>/dev/null)"
+            [[ "$link" == "$target" ]] && return 0
+        done
+    done
+    return 1
+}
+
+_clear_stale_account_locks_if_safe() {
+    local cleared=false
+    local lockfile
+    for lockfile in "${_ACCOUNT_LOCK_CANDIDATES[@]}"; do
+        [[ -e "$lockfile" ]] || continue
+        if _file_is_open_by_any_process "$lockfile"; then
+            echo "  NOTE: $lockfile exists and IS currently open by a live process --" >&2
+            echo "  leaving it alone (this looks like genuine, active contention, not a stale lock)." >&2
+            continue
+        fi
+        echo "  $lockfile exists but is NOT held open by any running process -- this is a" >&2
+        echo "  stale lock file (most likely left behind by an account-tool invocation that" >&2
+        echo "  was killed abnormally at some point -- note that rebooting the HOST does NOT" >&2
+        echo "  clean these up, since they are plain files under /etc, not process-held" >&2
+        echo "  kernel locks). Removing it automatically, exactly as a human would after" >&2
+        echo "  manually confirming the same thing with 'fuser'/'lsof'/ps." >&2
+        rm -f "$lockfile" && cleared=true
+    done
+    $cleared
+}
+
 _retry_account_cmd() {
     local attempt=1
     local max_attempts=5
@@ -61,10 +124,16 @@ _retry_account_cmd() {
         local rc=$?
         if [[ $attempt -ge $max_attempts ]]; then
             echo "ERROR: '$*' still failing after $max_attempts attempts -- giving up." >&2
+            echo "ERROR: if this is STILL 'cannot lock /etc/passwd', check by hand:" >&2
+            echo "  ps aux | grep -E 'useradd|userdel|passwd|chpasswd|vipw|vigr|usermod|groupadd|groupdel'" >&2
+            echo "  ls -la /etc/.pwd.lock /etc/.grp.lock /etc/.shadow.lock /etc/.gshadow.lock" >&2
             return $rc
         fi
         echo "  (attempt $attempt/$max_attempts) '$*' failed -- likely transient /etc/passwd" >&2
-        echo "  lock contention from something outside this appliance; retrying in ${delay}s..." >&2
+        echo "  lock contention from something outside this appliance; checking for a stale" >&2
+        echo "  lock file before retrying..." >&2
+        _clear_stale_account_locks_if_safe || true
+        echo "  retrying in ${delay}s..." >&2
         sleep "$delay"
         attempt=$((attempt + 1))
         delay=$((delay * 2))
