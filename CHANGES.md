@@ -720,95 +720,82 @@ msp_console/templates/customer_detail.html
 
 ---
 
-## Change Tree -- Stale Account-Lock File Self-Healing (Live-Reported)
+## Change Tree -- Fail-Fast Detection of a Read-Only Filesystem (Live-Reported)
 
-Baseline: this same repo, after the flock+retry fix for useradd/passwd
-lock contention. A customer still reproducibly failed to provision with
-the identical error, EVEN AFTER a full VM reboot intended to "clear
-processes" -- proving the retry-with-backoff fix alone was insufficient
-for a related but distinct failure mode: a genuinely STALE lock FILE,
-not transient contention from a live process.
+Baseline: this same repo, after the stale-account-lock-file self-healing
+fix. A customer STILL failed to provision with the identical
+"cannot lock /etc/passwd" error, even after manually removing the
+stale lock file by hand -- the actual console output showed the real,
+underlying cause the whole time: `rm: cannot remove '/etc/.pwd.lock':
+Read-only file system`. The previous fix's own attempt to clear the
+stale lock was itself failing for the same reason, but that failure
+was silently absorbed (`|| true`) and the script just kept retrying
+something that could never succeed.
 
 ### ~ Modified files
 
 ```
 bin/msp-provision-customer.sh
 bin/msp-deprovision-customer.sh
-  - Both scripts' _retry_account_cmd() now calls a new
-    _clear_stale_account_locks_if_safe() between retry attempts, which
-    checks (using only /proc -- no fuser/lsof dependency, matching this
-    codebase's existing philosophy of not assuming optional packages
-    are present) whether any of shadow-utils' lock files
-    (/etc/.pwd.lock, /etc/.grp.lock, /etc/.shadow.lock,
-    /etc/.gshadow.lock, /etc/.subid.lock, /etc/.subgid.lock) exist AND
-    are genuinely not held open by any live process. Only if BOTH are
-    true does it remove the stale file before the next retry --
-    exactly as safe as a human manually confirming the same thing with
-    fuser/lsof/ps before deleting it by hand.
-  - BUG: shadow-utils' account-database locking is NOT an in-kernel
-    advisory lock (flock/fcntl) tied to a live process -- it is a
-    plain lockFILE created with O_CREAT|O_EXCL ("atomically create,
-    fail if it already exists"). A process that dies abnormally
-    (OOM-killed, a hard VM reset mid-operation, etc.) WITHOUT running
-    its own cleanup leaves that lock file behind PERMANENTLY. Critically,
-    a plain host reboot does NOT fix this -- rebooting only clears
-    processes and memory, it does not delete files under /etc -- so the
-    stale file continues blocking every future useradd/userdel call
-    indefinitely, with the exact same "cannot lock /etc/passwd; try
-    again later" error every single time. The previous fix's
-    retry-with-backoff was only ever designed to wait out a live,
-    finishing process; it could never recover from a lock that nothing
-    is actually holding anymore, which is exactly what a live customer
-    report demonstrated -- the same error, still occurring after a full
-    VM reboot specifically intended to clear stuck processes.
-  - REPRODUCED PRECISELY before fixing: confirmed directly on the
-    testing host that a real, pre-existing /etc/.pwd.lock file (dated
-    from days earlier, 0 bytes, untouched) causes a fresh
-    open(O_CREAT|O_EXCL) attempt against that exact path to fail with
-    "File exists" -- the identical underlying mechanism behind
-    useradd's error message -- and separately confirmed (via a
-    dependency-free /proc-based open-file check) that this specific
-    file is NOT held open by any running process, proving it is a
-    genuinely orphaned artifact, not active contention.
-  - RE-VERIFIED end-to-end afterward: simulated the exact reported
-    failure (a stale lock file present from before the script even
-    starts, with a fake useradd that fails identically every time the
-    file exists) against the real, newly-patched script -- confirmed it
-    now detects the stale file on the very first failed attempt,
-    removes it safely, and succeeds on the very next retry (after 1s,
-    not exhausting all 5 attempts), completing the full provisioning
-    flow end-to-end.
+  - Added _etc_is_writable(), checked ONCE up front by
+    _retry_account_cmd() before entering its retry loop at all -- if
+    /etc is not writable right now, useradd/userdel cannot possibly
+    succeed no matter how many times or how long the script waits, so
+    it now fails IMMEDIATELY (0 seconds) with a clear, correct
+    diagnosis instead of silently burning through all 5 retries
+    (15+ seconds) only to end with a generic "giving up" message that
+    never mentioned the real cause.
+  - _clear_stale_account_locks_if_safe()'s own `rm -f` call is now
+    checked for failure too (previously implicit success was assumed);
+    if that removal fails with "Read-only file system" specifically,
+    the script now aborts immediately with the same clear diagnosis,
+    rather than silently continuing to the next retry attempt as
+    before. This is the second, independent detection layer, covering
+    the case where the filesystem only becomes unwritable partway
+    through a run (the up-front check above covers the more common
+    case where it was already unwritable from the start).
+  - Both new failure paths print the SAME actionable diagnosis: this is
+    an OS-level problem (most likely the kernel's default
+    errors=remount-ro behavior after detecting filesystem
+    inconsistency, commonly triggered by a VM being hard-reset or
+    power-cycled mid-write) that requires fixing the filesystem itself
+    (mount -o remount,rw, or an offline fsck if that fails) before this
+    host can provision or deprovision ANY customer again -- not
+    something any application-level retry could ever resolve.
 ```
 
 ### Design notes worth knowing
 
-- **This is a genuinely distinct root cause from the prior lock-related
-  fix, not a failure of it.** The earlier flock (serializing this
-  appliance's own concurrent provision/deprovision calls) and
-  retry-with-backoff (for contention from something outside this
-  appliance) were both real, correct fixes for real, different
-  problems -- but neither one, by design, could ever detect or recover
-  from a lock file that has been orphaned by a process that no longer
-  exists. This fix adds exactly that missing capability, without
-  removing or weakening either of the previous two.
-- **Automated removal was scoped as narrowly as it safely could be.**
-  The check is not "the file exists, so delete it" -- it is "the file
-  exists AND no live process anywhere on the system currently has it
-  open," verified by walking every process's actual open file
-  descriptors in /proc. This is the same verification a careful
-  administrator would perform by hand before manually deleting a
-  suspected-stale lock file; the only thing automated here is
-  performing that same check reliably every time instead of requiring
-  a human to SSH in and do it.
-- **Deliberately dependency-free.** `fuser`/`lsof` are the more common
-  tools for this kind of check but are NOT guaranteed present on a
-  minimal Rocky/RHEL install (this codebase already documents this
-  exact caveat for `dnf-utils` and `policycoreutils-python-utils` in
-  `iso-build/bootstrap-appliance.sh`) -- so this uses only `/proc`,
-  which is always present on any Linux system, with zero additional
-  package requirements.
-- **A host reboot is not a substitute for this fix, and users should
-  not rely on "just reboot" going forward** -- this was the direct,
-  concrete lesson from the report that prompted this fix: rebooting
-  clears live processes but has no effect whatsoever on stale files
-  already sitting on persistent storage under /etc.
+- **This is the third distinct root cause found in this same general
+  area, and each one was genuinely different from the last:** (1) two
+  concurrent useradd/userdel calls colliding on a live, shared lock
+  (fixed with a flock + retry), (2) a stale lock FILE left behind by an
+  abnormally-killed process, persisting across reboots since reboots
+  don't delete files (fixed with safe, /proc-verified auto-removal),
+  and now (3) the filesystem itself being read-only, which defeats
+  BOTH of the previous fixes simultaneously -- useradd can't write its
+  lock file, and this script's own attempt to clean up a stale one
+  fails too, for the identical underlying reason. Each fix was correct
+  and necessary for the failure mode it targeted; none of them was
+  wrong, they were just addressing three separate, independently
+  possible causes of the same surface-level error message.
+- **Reproduced precisely again before fixing, using the exact error
+  text from the live report.** A fake `useradd` that always fails, and
+  a fake `rm` that fails ONLY for the specific lock file path with the
+  literal message `Read-only file system`, were used to confirm the
+  patched script now detects this immediately (0 seconds elapsed,
+  verified with a timer) rather than exhausting all 5 retries as
+  before. Both detection layers (the up-front check and the mid-retry
+  fallback) were verified independently, and the unrelated "genuinely
+  stale lock on a genuinely writable filesystem" happy path was
+  re-confirmed to still self-heal and complete successfully (exit code
+  0) -- this fix does not regress the previous one.
+- **A read-only filesystem is an OS/infrastructure problem, and this
+  fix does not (and cannot) resolve it from inside the appliance.**
+  What changed is purely diagnostic speed and clarity: the same
+  underlying VM-level issue (most likely triggered by the hard
+  reset/power-cycle mentioned in the original report) must still be
+  fixed directly on the host -- `mount -o remount,rw /`, or an offline
+  `fsck` if that fails or reverts immediately -- before ANY further
+  provisioning/deprovisioning will succeed on that host, regardless of
+  what this script does.

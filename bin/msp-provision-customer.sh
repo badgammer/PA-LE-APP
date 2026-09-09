@@ -71,14 +71,15 @@ fi
 # nothing running that will ever finish and release a lock that isn't
 # actually held by anyone anymore.
 #
-# _stale_lock_files() therefore checks, using ONLY /proc (no fuser/lsof
-# dependency -- neither is guaranteed present on a minimal install,
-# matching this codebase's existing dnf-utils/policycoreutils
-# philosophy), whether any of these lock files exist AND are genuinely
-# not held open by any live process. Only if BOTH are true does
-# _retry_account_cmd remove the stale file itself before retrying --
-# this is exactly as safe as a human manually verifying "is anything
-# actually using this?" before deleting it by hand, just automated.
+# _clear_stale_account_locks_if_safe() therefore checks, using ONLY
+# /proc (no fuser/lsof dependency -- neither is guaranteed present on a
+# minimal install, matching this codebase's existing dnf-utils/
+# policycoreutils philosophy), whether any of these lock files exist
+# AND are genuinely not held open by any live process. Only if BOTH are
+# true does _retry_account_cmd remove the stale file itself before
+# retrying -- this is exactly as safe as a human manually verifying "is
+# anything actually using this?" before deleting it by hand, just
+# automated.
 _ACCOUNT_LOCK_CANDIDATES=(
     /etc/.pwd.lock /etc/.grp.lock /etc/.shadow.lock /etc/.gshadow.lock
     /etc/.subid.lock /etc/.subgid.lock
@@ -98,6 +99,30 @@ _file_is_open_by_any_process() {
     return 1
 }
 
+# Distinct from the stale-lock-FILE case above: this checks whether
+# /etc itself is even WRITABLE at all right now. If it isn't (e.g. the
+# root filesystem was remounted read-only by the kernel after detecting
+# an inconsistency -- ext4's default errors=remount-ro behavior, most
+# commonly triggered by a VM being hard-reset/power-cycled mid-write --
+# see the README/CHANGES.md for the full explanation), then NEITHER
+# useradd NOR our own attempt to remove a stale lock file can ever
+# succeed, no matter how many times or how long we retry. Detecting
+# this UP FRONT and failing immediately with a clear, correct diagnosis
+# is far better than silently burning through all 5 retries (15+
+# seconds) only to end with a generic "giving up" message that never
+# mentions the actual, real cause -- which is an OS/filesystem-level
+# problem entirely outside this script's or this appliance's control,
+# not something any amount of application-level retrying can fix.
+_etc_is_writable() {
+    local testfile
+    testfile="/etc/.acme-appliance-writetest.$$"
+    if ( : > "$testfile" ) 2>/dev/null; then
+        rm -f "$testfile"
+        return 0
+    fi
+    return 1
+}
+
 _clear_stale_account_locks_if_safe() {
     local cleared=false
     local lockfile
@@ -114,7 +139,36 @@ _clear_stale_account_locks_if_safe() {
         echo "  clean these up, since they are plain files under /etc, not process-held" >&2
         echo "  kernel locks). Removing it automatically, exactly as a human would after" >&2
         echo "  manually confirming the same thing with 'fuser'/'lsof'/ps." >&2
-        rm -f "$lockfile" && cleared=true
+        if ! rm -f "$lockfile" 2>/tmp/.acme-lockrm-err.$$; then
+            if grep -qi "read-only file system" "/tmp/.acme-lockrm-err.$$" 2>/dev/null; then
+                rm -f "/tmp/.acme-lockrm-err.$$" 2>/dev/null
+                echo "" >&2
+                echo "############################################################" >&2
+                echo "FATAL: could not remove $lockfile -- the filesystem itself is" >&2
+                echo "READ-ONLY. This is an OS-level problem, not an application bug:" >&2
+                echo "no amount of retrying will ever fix this. The most common cause" >&2
+                echo "is the kernel automatically remounting the root filesystem" >&2
+                echo "read-only after detecting an inconsistency (ext4's default" >&2
+                echo "errors=remount-ro behavior) -- frequently triggered by a VM" >&2
+                echo "being hard-reset or power-cycled while something was mid-write." >&2
+                echo "" >&2
+                echo "On the appliance host, diagnose and fix this DIRECTLY (not" >&2
+                echo "through this script or the MSP Console) before retrying:" >&2
+                echo "  mount | grep ' / '" >&2
+                echo "  dmesg | grep -iE 'ext4|xfs|error|remount|read-only' | head -40" >&2
+                echo "  sudo mount -o remount,rw /" >&2
+                echo "If the remount above fails or reverts immediately, the" >&2
+                echo "filesystem likely has real corruption from an earlier abrupt" >&2
+                echo "shutdown and needs an OFFLINE fsck (boot to rescue mode; you" >&2
+                echo "generally cannot fsck a mounted root filesystem) before this" >&2
+                echo "host can provision or deprovision ANY customer again." >&2
+                echo "############################################################" >&2
+                exit 1
+            fi
+            rm -f "/tmp/.acme-lockrm-err.$$" 2>/dev/null
+        else
+            cleared=true
+        fi
     done
     $cleared
 }
@@ -123,6 +177,20 @@ _retry_account_cmd() {
     local attempt=1
     local max_attempts=5
     local delay=1
+    if ! _etc_is_writable; then
+        echo "" >&2
+        echo "############################################################" >&2
+        echo "FATAL: /etc is not writable on this host RIGHT NOW -- useradd" >&2
+        echo "cannot possibly succeed, and retrying will not help. This" >&2
+        echo "usually means the root filesystem has been remounted" >&2
+        echo "read-only by the kernel (see dmesg for the actual cause)." >&2
+        echo "Fix this at the OS level first:" >&2
+        echo "  mount | grep ' / '" >&2
+        echo "  dmesg | grep -iE 'ext4|xfs|error|remount|read-only' | head -40" >&2
+        echo "  sudo mount -o remount,rw /" >&2
+        echo "############################################################" >&2
+        return 1
+    fi
     while true; do
         if "$@"; then
             return 0
@@ -133,6 +201,7 @@ _retry_account_cmd() {
             echo "ERROR: if this is STILL 'cannot lock /etc/passwd', check by hand:" >&2
             echo "  ps aux | grep -E 'useradd|userdel|passwd|chpasswd|vipw|vigr|usermod|groupadd|groupdel'" >&2
             echo "  ls -la /etc/.pwd.lock /etc/.grp.lock /etc/.shadow.lock /etc/.gshadow.lock" >&2
+            echo "  mount | grep ' / '   # confirm the filesystem is actually writable" >&2
             return $rc
         fi
         echo "  (attempt $attempt/$max_attempts) '$*' failed -- likely transient /etc/passwd" >&2
