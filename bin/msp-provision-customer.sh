@@ -21,6 +21,62 @@
 
 set -euo pipefail
 
+# --------------------------------------------------------------- locking
+# useradd/userdel serialize on a shared, OS-wide /etc/passwd (etc.) lock
+# file -- if this script's own useradd call collides with ANYTHING else
+# on the box also mutating account databases at that exact moment
+# (another invocation of this same script from a double-click on the MSP
+# Console's "Provision customer" button, msp-deprovision-customer.sh's
+# userdel running concurrently for a different customer, an unrelated
+# admin session, config management, etc.), useradd fails immediately
+# with "cannot lock /etc/passwd; try again later" -- a real, previously
+# reported error, not hypothetical.
+#
+# Two independent defenses, both needed:
+#   1. This script (and msp-deprovision-customer.sh) take a shared,
+#      appliance-owned flock BEFORE touching any account database, so
+#      this appliance's OWN provision/deprovision calls always run one
+#      at a time and never collide with each other, regardless of
+#      whether the caller was careful about that (the MSP Console's
+#      "Provision customer" button has no client-side double-submit
+#      guard as of this writing, so this flock is the real backstop).
+#   2. _retry_account_cmd() below additionally retries the useradd
+#      call itself with a short exponential backoff, since useradd's
+#      own error message ("try again later") is quite literally asking
+#      for a retry -- this also covers contention from something
+#      OUTSIDE this appliance's own flock (e.g. a human running useradd
+#      by hand on the box at the same moment).
+ACCOUNT_LOCK_FILE="/run/acme-appliance/msp-account-ops.lock"
+mkdir -p "$(dirname "$ACCOUNT_LOCK_FILE")"
+exec 9>"$ACCOUNT_LOCK_FILE"
+if ! flock -w 30 9; then
+    echo "ERROR: could not acquire the account-operations lock within 30s -- another" >&2
+    echo "       provision/deprovision is apparently stuck. Check 'ps aux | grep useradd'" >&2
+    echo "       and /run/acme-appliance/msp-account-ops.lock before retrying." >&2
+    exit 1
+fi
+
+_retry_account_cmd() {
+    local attempt=1
+    local max_attempts=5
+    local delay=1
+    while true; do
+        if "$@"; then
+            return 0
+        fi
+        local rc=$?
+        if [[ $attempt -ge $max_attempts ]]; then
+            echo "ERROR: '$*' still failing after $max_attempts attempts -- giving up." >&2
+            return $rc
+        fi
+        echo "  (attempt $attempt/$max_attempts) '$*' failed -- likely transient /etc/passwd" >&2
+        echo "  lock contention from something outside this appliance; retrying in ${delay}s..." >&2
+        sleep "$delay"
+        attempt=$((attempt + 1))
+        delay=$((delay * 2))
+    done
+}
+
 SLUG="${1:?Usage: msp-provision-customer.sh <customer-slug>}"
 if [[ ! "$SLUG" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
     echo "ERROR: '$SLUG' is not a valid instance slug (lowercase letters/digits/hyphens only, no leading/trailing hyphen)." >&2
@@ -71,7 +127,7 @@ fi
 echo "Provisioning customer instance '$SLUG'..."
 
 echo "  Creating dedicated system account '$SERVICE_USER'..."
-id -u "$SERVICE_USER" &>/dev/null || useradd --system --home "$CUSTOMER_ETC_DIR" --shell /sbin/nologin "$SERVICE_USER"
+id -u "$SERVICE_USER" &>/dev/null || _retry_account_cmd useradd --system --home "$CUSTOMER_ETC_DIR" --shell /sbin/nologin "$SERVICE_USER"
 
 echo "  Creating and chowning directory tree..."
 install -d -m 0700 -o "$SERVICE_USER" -g "$SERVICE_USER" "$CUSTOMER_ETC_DIR" "$CUSTOMER_ETC_DIR/backups" "$CUSTOMER_ETC_DIR/letsencrypt"

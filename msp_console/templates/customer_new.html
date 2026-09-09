@@ -19,4 +19,21 @@
     </div>
   </form>
 </div>
+<script>
+// Guards against a double-click (or an impatient re-click while the
+// request is still in flight) sending two overlapping provisioning
+// requests -- useradd/userdel serialize on a shared, OS-wide account
+// database lock, so two near-simultaneous provisioning attempts can
+// otherwise produce a confusing, purely-timing-dependent
+// "cannot lock /etc/passwd; try again later" error even though the
+// underlying scripts now also protect themselves with their own lock
+// (see bin/msp-provision-customer.sh) -- this stops the redundant
+// second request from ever being sent in the first place.
+document.querySelector('form').addEventListener('submit', function () {
+  var btn = this.querySelector('button[type="submit"]');
+  if (btn.disabled) { return; }
+  btn.disabled = true;
+  btn.textContent = 'Provisioning...';
+});
+</script>
 {% endblock %}

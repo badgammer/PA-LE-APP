@@ -43,7 +43,7 @@
     on the host.
   </p>
   <form method="post" action="{{ url_for('customer_deprovision', slug=status.slug) }}"
-        onsubmit="return confirm('This will stop and archive {{ status.slug }}. Are you absolutely sure?');">
+        onsubmit="return confirmDeprovision(this, '{{ status.slug }}');">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <label for="confirm_slug">Type the customer slug (<code>{{ status.slug }}</code>) to confirm</label>
     <input type="text" id="confirm_slug" name="confirm_slug" required>
@@ -51,6 +51,23 @@
       <button type="submit" class="btn btn-danger">Deprovision {{ status.slug }}</button>
     </div>
   </form>
+  <script>
+  // Same double-submit concern as the "Add customer" form (see
+  // customer_new.html) -- userdel shares the same OS-wide account
+  // database lock useradd does, so this is disabled only AFTER the
+  // confirm() dialog is accepted, never before (canceling the confirm
+  // must leave the button clickable again, not stuck disabled).
+  function confirmDeprovision(form, slug) {
+    if (!confirm('This will stop and archive ' + slug + '. Are you absolutely sure?')) {
+      return false;
+    }
+    var btn = form.querySelector('button[type="submit"]');
+    if (btn.disabled) { return false; }
+    btn.disabled = true;
+    btn.textContent = 'Deprovisioning...';
+    return true;
+  }
+  </script>
 </div>
 {% endif %}
 

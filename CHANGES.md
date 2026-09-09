@@ -602,5 +602,118 @@ bin/msp-provision-customer.sh
   forward prevents the issue for any NEW customer or NEW host from this
   point on.
 
+---
+
+## Change Tree -- useradd/passwd Lock Contention Fix (Live-Reported)
+
+Baseline: this same repo, after both prior fixes (sudoers copy, access
+log pre-creation) were confirmed present. Despite those fixes, customer
+provisioning still failed with `useradd: cannot lock /etc/passwd; try
+again later.` -- a genuinely different, previously untested failure
+mode: useradd/userdel serialize on a shared, OS-wide account-database
+lock, and NOTHING in this codebase previously protected against two
+near-simultaneous account mutations colliding on it (no server-side
+lock around provisioning, no client-side guard against a double-click
+on "Provision customer", and no retry around useradd itself even
+though its own error message is literally asking for one).
+
+### ~ Modified files
+
+```
+bin/msp-provision-customer.sh
+  - Added an appliance-wide flock (/run/acme-appliance/msp-account-ops.lock,
+    30s wait) taken BEFORE any account-database mutation, so this
+    appliance's own provision/deprovision calls always run one at a
+    time and can never collide with each other regardless of what
+    triggered them concurrently (double-click, two admins, a retried
+    web request, etc.).
+  - Added _retry_account_cmd(), a short exponential-backoff retry
+    wrapper (5 attempts, 1/2/4/8s delays) around the useradd call
+    specifically -- covers contention from anything OUTSIDE this
+    appliance's own flock (e.g. a human running useradd by hand on the
+    box at the same moment), since useradd's own "try again later"
+    error message is quite literally advising exactly this.
+
+bin/msp-deprovision-customer.sh
+  - Added the SAME flock, using the SAME lock file as
+    msp-provision-customer.sh, so a provision for one customer and a
+    deprovision for another can never race on the shared account
+    database either.
+  - Wrapped the userdel call in the same _retry_account_cmd() helper.
+    Preserved the original call's "non-fatal on final failure" behavior
+    (`|| true`) but deliberately did NOT keep the original
+    `2>/dev/null` redirect, since that would have also silently
+    swallowed the retry helper's own progress messages on stderr.
+
+msp_console/templates/customer_new.html
+  - Added a disable-on-submit script: the "Provision customer" button
+    disables itself (and its label changes to "Provisioning...") the
+    instant the form is submitted, preventing a double-click or an
+    impatient re-click during a slow request from ever sending a
+    second, overlapping provisioning request in the first place. This
+    is now the FIRST line of defense; the flock in
+    msp-provision-customer.sh is the backstop that still holds even if
+    this client-side guard is bypassed (e.g. two different browser
+    tabs/sessions).
+
+msp_console/templates/customer_detail.html
+  - Consolidated the deprovision form's inline onsubmit confirm() and a
+    new disable-on-submit guard into one confirmDeprovision(form, slug)
+    function, specifically so that canceling the confirmation dialog
+    leaves the button clickable again rather than getting stuck
+    disabled (a real edge case that a naive "always disable on submit"
+    implementation would have introduced).
+```
+
+### Design notes worth knowing
+
+- **This was a live production report, reproduced exactly before being
+  fixed.** A fake `useradd` was scripted to fail TWICE with the
+  identical error text from the reported screenshot
+  ("useradd: cannot lock /etc/passwd; try again later.") before
+  succeeding on a third call, then the REAL, unmodified
+  bin/msp-provision-customer.sh (pre-fix) was run against it end-to-end
+  to confirm the script aborted the whole provisioning attempt on the
+  very first useradd failure -- exactly matching the reported behavior.
+  The same fake useradd was then run again against the PATCHED script
+  and confirmed to succeed after two automatic retries, completing
+  provisioning fully (directory tree, appliance.yaml, systemd units all
+  created) rather than aborting.
+- **The flock's serialization was verified with genuinely concurrent
+  processes, not just reasoned about.** Two real, separate `bash`
+  processes were launched a few milliseconds apart against the actual
+  patched script (one provisioning "customer-a", one "customer-b"),
+  with a fake useradd that logs precise start/end timestamps and holds
+  the "account database" for 0.5s per call. The captured timeline
+  confirmed customer-a's useradd call fully completed (START through
+  END) before customer-b's useradd call ever started -- i.e. the two
+  concurrent provisioning attempts were correctly serialized rather
+  than allowed to race.
+- **Why a flock AND a retry, not just one or the other:** the flock
+  alone only protects this appliance's OWN provision/deprovision calls
+  against each other -- it cannot prevent contention from a completely
+  external process (a human running `useradd` by hand, unrelated
+  config management, etc.) that isn't participating in this
+  appliance's locking convention at all. The retry-with-backoff is the
+  layer that handles that case, and is cheap/safe to have even though
+  the flock alone eliminates the most likely self-inflicted cause
+  (there being no client or server-side guard against this appliance's
+  own concurrent requests up to this point).
+- **The UI disable-on-submit guards are a genuine belt-and-suspenders
+  addition, not a replacement for the shell-level fix.** Even with
+  perfect client-side guarding, two different browser sessions/tabs
+  (e.g. two different MSP staff both provisioning at the same moment)
+  could still trigger genuinely concurrent server-side requests -- the
+  flock in the shell scripts is what actually guarantees correctness;
+  the UI changes only reduce how often that flock's 30-second wait is
+  ever actually exercised in practice.
+- **Known gaps carried forward, not newly introduced:**
+  `deploy_providers/iis.py` still hasn't been exercised against a real
+  Windows/IIS host, and no sudoers rule in this repo has yet been
+  validated with a live `sudo -l -U <account>` on a real target host --
+  both still call for one-time validation on an actual box before
+  production use, same as previously noted.
+
+
 
 

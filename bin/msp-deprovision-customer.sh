@@ -35,6 +35,42 @@ if [[ -z "$SLUG" ]]; then
     exit 1
 fi
 
+# Same appliance-wide account-operations lock bin/msp-provision-customer.sh
+# uses (and the SAME lock file), so a provision for one customer and a
+# deprovision for another can never both call useradd/userdel at the same
+# moment and collide on the shared, OS-wide /etc/passwd lock -- see the
+# detailed comment in msp-provision-customer.sh for the full reasoning.
+ACCOUNT_LOCK_FILE="/run/acme-appliance/msp-account-ops.lock"
+mkdir -p "$(dirname "$ACCOUNT_LOCK_FILE")"
+exec 9>"$ACCOUNT_LOCK_FILE"
+if ! flock -w 30 9; then
+    echo "ERROR: could not acquire the account-operations lock within 30s -- another" >&2
+    echo "       provision/deprovision is apparently stuck. Check 'ps aux | grep userdel'" >&2
+    echo "       and /run/acme-appliance/msp-account-ops.lock before retrying." >&2
+    exit 1
+fi
+
+_retry_account_cmd() {
+    local attempt=1
+    local max_attempts=5
+    local delay=1
+    while true; do
+        if "$@"; then
+            return 0
+        fi
+        local rc=$?
+        if [[ $attempt -ge $max_attempts ]]; then
+            echo "ERROR: '$*' still failing after $max_attempts attempts -- giving up." >&2
+            return $rc
+        fi
+        echo "  (attempt $attempt/$max_attempts) '$*' failed -- likely transient /etc/passwd" >&2
+        echo "  lock contention from something outside this appliance; retrying in ${delay}s..." >&2
+        sleep "$delay"
+        attempt=$((attempt + 1))
+        delay=$((delay * 2))
+    done
+}
+
 SERVICE_USER="acmecust-$SLUG"
 CUSTOMER_ETC_DIR="/etc/acme-appliance/customers/$SLUG"
 CUSTOMER_VAR_DIR="/var/lib/acme-appliance/customers/$SLUG"
@@ -74,7 +110,11 @@ rm -rf "/run/acme-appliance/$SLUG"
 
 if id -u "$SERVICE_USER" &>/dev/null; then
     echo "Removing system account '$SERVICE_USER'..."
-    userdel "$SERVICE_USER" 2>/dev/null || true
+    # (not "2>/dev/null" here, unlike the original -- that would also
+    # silently swallow _retry_account_cmd's own progress messages on
+    # stderr; "|| true" alone still preserves this call's original
+    # best-effort/non-fatal behavior on final failure)
+    _retry_account_cmd userdel "$SERVICE_USER" || true
 fi
 
 echo ""
