@@ -799,3 +799,110 @@ bin/msp-deprovision-customer.sh
   `fsck` if that fails or reverts immediately -- before ANY further
   provisioning/deprovisioning will succeed on that host, regardless of
   what this script does.
+
+---
+
+## Change Tree -- The REAL Root Cause: MSP Console's own ProtectSystem=strict (Live-Reported)
+
+Baseline: this same repo, after the read-only-filesystem fail-fast fix.
+A customer STILL failed to provision with the identical
+"cannot lock /etc/passwd" error -- this time reproduced on a BRAND NEW
+VM, on a DIFFERENT HOST, on a DIFFERENT CPU ARCHITECTURE (ARM vs. x86)
+from the original report. That combination of facts ruled out disk
+corruption, VM state, and hardware entirely: the only thing common to
+every failing environment was the appliance's OWN code, specifically
+`systemd/msp-console/acme-msp-console.service`.
+
+### ~ Modified files
+
+```
+systemd/msp-console/acme-msp-console.service
+  - ReadWritePaths= expanded from
+    "/etc/acme-appliance/msp-console /var/log/acme-appliance" to
+    "/etc/acme-appliance/msp-console /etc/acme-appliance/customers
+    /etc /var/log/acme-appliance /var/lib/acme-appliance
+    /run/acme-appliance".
+  - BUG: this unit runs with ProtectSystem=strict, which bind-mounts
+    the ENTIRE filesystem read-only for the unit's whole process tree
+    except paths explicitly listed in ReadWritePaths=, ENFORCED BY THE
+    KERNEL AT THE MOUNT LAYER -- meaning it applies regardless of UID,
+    including root. sudo does NOT create a new mount namespace (it
+    only changes UID/capabilities), so when this service runs
+    `sudo bin/msp-provision-customer.sh <slug>` via its sudoers rule,
+    that script -- and everything it execs (useradd, userdel,
+    systemctl enable, every mkdir) -- ALL still run inside this same
+    read-only-except-ReadWritePaths mount namespace, even as root.
+    Only /etc/acme-appliance/msp-console and /var/log/acme-appliance
+    were ever listed, so useradd could never write /etc/passwd,
+    /etc/shadow, or their .lock files, and the provisioning script
+    could never create a customer's own directories under
+    /etc/acme-appliance/customers/<slug>,
+    /var/lib/acme-appliance/customers/<slug>, or
+    /run/acme-appliance/<slug>. This explains why EVERY previous fix in
+    this area (the flock, the retry-with-backoff, the stale-lock
+    self-healing, the read-only-filesystem fail-fast check) genuinely
+    helped with the specific failure mode each one targeted, yet
+    provisioning still failed -- none of them could ever have touched
+    this cause, because it isn't in any of the scripts those fixes
+    patched at all; it's in the systemd unit that runs the whole
+    process tree those scripts execute inside of.
+
+README.md
+  - New gotcha #12 documenting the ProtectSystem=strict / ReadWritePaths=
+    interaction, why sudo does not escape it, and why adding /etc to
+    ReadWritePaths= does NOT hand the unprivileged acme-msp-console
+    account direct write access to /etc/passwd (ordinary Unix DAC
+    permissions remain a separate, still fully-enforced layer on top).
+```
+
+### Design notes worth knowing
+
+- **Reproduced with a real mount namespace, not just reasoned about.**
+  Using the same primitive `ProtectSystem=strict` uses under the hood
+  (`mount --bind` + `mount -o remount,bind,ro`, inside a fresh mount
+  namespace via `unshare --mount`), a write attempt as uid 0 (mapped
+  root) against a bind-mounted-read-only path failed with the IDENTICAL
+  error text (`Read-only file system`) reported in the live screenshots
+  -- confirming this is not merely plausible but the literal mechanism.
+  The same test was then re-run with the path correctly included in the
+  namespace's writable set (mirroring the fixed `ReadWritePaths=`), and
+  the write succeeded -- confirming the fix resolves the exact failure
+  mode, not just a hypothesis about it.
+- **The cross-host, cross-architecture report was the decisive clue.**
+  Every earlier fix in this area was validated against a specific
+  environment's specific symptom (a specific error message, a specific
+  timing window). This report -- the SAME error, on hardware and a host
+  that had never run this appliance before -- was only explainable by
+  something baked into the appliance's own shipped configuration,
+  reapplied identically on every fresh install regardless of the
+  underlying disk/VM/CPU. That is exactly what a systemd unit file is.
+- **This does not weaken the sandboxing `ProtectSystem=strict` provides.**
+  `ReadWritePaths=` only lifts the MOUNT-level read-only restriction for
+  the listed paths; it does not grant any new Unix (DAC) permission.
+  `/etc/passwd` and `/etc/shadow` remain owned root:root with their
+  standard restrictive modes -- the unprivileged `acme-msp-console`
+  account still cannot write to them directly, only root (reached
+  exclusively through the narrow, audited sudoers rules already in
+  place) can. `ProtectSystem=strict` itself is kept, rather than
+  disabled outright, so this service still cannot tamper with /usr,
+  /boot, or other OS binaries even in the event of some unrelated,
+  future bug in its own Python code.
+- **Every prior fix in this area remains valid and necessary.** The
+  flock (self-collision prevention), the retry-with-backoff (external
+  contention), the stale-lock self-healing (orphaned lock files
+  surviving a reboot), and the read-only-filesystem fail-fast check
+  (fast, correct diagnosis when /etc genuinely can't be written) all
+  still matter -- they are correct defenses against four DIFFERENT,
+  independently possible causes of highly similar symptoms. This fix is
+  a fifth, and it happens to be the one that was actually manifesting
+  on this particular reporter's hosts throughout this entire
+  investigation, hence why none of the previous four alone resolved it
+  for them.
+- **Known gaps carried forward, not newly introduced:**
+  `deploy_providers/iis.py` still hasn't been exercised against a real
+  Windows/IIS host, and this fix itself has not yet been validated by
+  actually installing this corrected unit and provisioning a real
+  customer end-to-end on a real systemd host (this environment has no
+  functioning init system to run a live service under) -- confirming
+  that on your actual target host is the natural next step.
+

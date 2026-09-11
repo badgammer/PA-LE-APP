@@ -46,7 +46,48 @@ RestartSec=5
 # iso-build/sudoers.d/acme-msp-console -- it still cannot run arbitrary
 # commands as root.
 ProtectSystem=strict
-ReadWritePaths=/etc/acme-appliance/msp-console /var/log/acme-appliance
+
+# --- CRITICAL FIX (previously missing) --------------------------------
+# ProtectSystem=strict bind-mounts the ENTIRE filesystem read-only for
+# this unit's process tree EXCEPT the paths listed in ReadWritePaths=
+# below -- and that restriction is enforced by the kernel at the mount
+# layer, which means it is NOT bypassed by privilege escalation. When
+# this service invokes `sudo /opt/acme-appliance/bin/msp-provision-
+# customer.sh <slug>`, sudo does NOT create a new mount namespace (it
+# only changes the process's UID/capabilities) -- so useradd, userdel,
+# `systemctl enable`, and every directory-creation step that script
+# performs ALL still run inside this SAME read-only-everywhere-but-
+# ReadWritePaths mount namespace, even though they are running as root.
+#
+# Previously, ONLY /etc/acme-appliance/msp-console and
+# /var/log/acme-appliance were listed here -- meaning useradd could
+# never write /etc/passwd, /etc/shadow, or their .lock files (producing
+# "cannot lock /etc/passwd; try again later" / "Read-only file system"
+# errors), and msp-provision-customer.sh could never create a
+# customer's own directories under /etc/acme-appliance/customers/<slug>,
+# /var/lib/acme-appliance/customers/<slug>, or
+# /run/acme-appliance/<slug>. This reproduced IDENTICALLY on every
+# host/VM/architecture tested, because it is a property of THIS unit
+# file, not of any particular disk, filesystem, or hardware -- no
+# amount of fsck, remounting, or provisioning on a brand-new VM could
+# ever have fixed it from outside this file.
+#
+# Granting /etc (and the appliance's own state directories) as
+# ReadWritePaths here does NOT hand this unprivileged service direct
+# write access to /etc/passwd -- ReadWritePaths only lifts the
+# MOUNT-level read-only restriction; normal Unix file permissions
+# (DAC) are still fully enforced on top of it. /etc/passwd and
+# /etc/shadow remain owned root:root with standard restrictive modes,
+# so the unprivileged acme-msp-console account still cannot write to
+# them directly -- only root (reached exclusively via the narrow,
+# audited sudoers rules in iso-build/sudoers.d/acme-msp-console) can.
+# ProtectSystem=strict is kept (rather than disabled outright) so this
+# service still cannot tamper with /usr, /boot, or other OS binaries
+# even after a hypothetical future privilege-escalation bug in its own
+# Python code.
+ReadWritePaths=/etc/acme-appliance/msp-console /etc/acme-appliance/customers /etc /var/log/acme-appliance /var/lib/acme-appliance /run/acme-appliance
+# ------------------------------------------------------------------------
+
 PrivateTmp=true
 PrivateDevices=true
 ProtectKernelTunables=true

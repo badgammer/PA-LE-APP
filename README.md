@@ -252,6 +252,34 @@ non-owner (staff) accounts is enforced as a 404, not a 403, on every
 route for a customer outside that admin's grant table -- so a staff
 account cannot even confirm a customer they lack access to exists.
 
+### 12. MSP Console's `ProtectSystem=strict` needs the right `ReadWritePaths=`
+The `acme-msp-console.service` systemd unit runs with
+`ProtectSystem=strict`, which bind-mounts the ENTIRE filesystem read-only
+for that unit's whole process tree -- and this restriction is enforced
+by the kernel at the mount layer, so it is **not** bypassed by
+privilege escalation. Since `sudo` does not create a new mount
+namespace (it only changes UID/capabilities), every script the console
+invokes via its sudoers rule (`msp-provision-customer.sh`,
+`msp-deprovision-customer.sh`, and everything they in turn call --
+`useradd`, `userdel`, `systemctl enable`) still runs inside this SAME
+read-only-except-`ReadWritePaths` view, even while running as root.
+`ReadWritePaths=` must therefore include `/etc` (so `useradd`/`userdel`
+can write `/etc/passwd`, `/etc/shadow`, and their lock files),
+`/etc/acme-appliance/customers`, `/var/lib/acme-appliance`, and
+`/run/acme-appliance` -- not just the console's own
+`/etc/acme-appliance/msp-console` and `/var/log/acme-appliance`.
+Without this, every provisioning/deprovisioning attempt fails
+identically with `useradd: cannot lock /etc/passwd; try again later.`
+(or `Read-only file system` when a stale-lock cleanup attempt hits the
+same restriction) -- **on every host, VM, and CPU architecture**,
+since the cause is this unit file itself, not any particular disk or
+hardware. Adding `/etc` to `ReadWritePaths=` does **not** hand the
+unprivileged `acme-msp-console` account direct write access to
+`/etc/passwd` -- it only lifts the mount-level restriction; ordinary
+Unix file permissions (DAC) are a separate, still fully-enforced layer
+on top, so only root (reached exclusively via the sudoers rules) can
+actually write there.
+
 ## Migrating an existing (pre-multi-target) appliance.yaml
 
 If you're upgrading from a version of this appliance that only supported
