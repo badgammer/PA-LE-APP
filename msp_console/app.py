@@ -27,9 +27,24 @@ from flask import (
     send_file
 )
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# IMPORTANT: insertion order matters here. Each sys.path.insert(0, ...)
+# pushes to the FRONT of the search path, so whichever path is inserted
+# LAST ends up with the HIGHEST priority. webui/ is inserted FIRST
+# (lowest priority) and this file's own directory LAST (highest
+# priority) specifically so that "import auth" (and "import fleet",
+# "import actions") resolve to THIS package's own auth.py/fleet.py/
+# actions.py -- NOT webui/auth.py, which is a same-named but
+# completely different module (single-instance profile's user store,
+# with any_users_exist()/create_user() instead of this package's
+# any_admins_exist()/create_admin()/is_owner()/customer_grant_level()).
+# Getting this order backwards previously caused "import auth" to
+# silently resolve to webui/auth.py instead, crashing every request
+# with AttributeError: module 'auth' has no attribute 'any_admins_exist'
+# on the very first call to auth.any_admins_exist() in login()/setup()
+# below -- confirmed via the exact traceback from a live deployment.
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "webui"))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import auth  # noqa: E402
 import fleet  # noqa: E402
