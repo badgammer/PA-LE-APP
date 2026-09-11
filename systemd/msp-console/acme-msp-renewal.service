@@ -1,0 +1,27 @@
+[Unit]
+Description=ACME certificate renewal for every customer namespace (msp-panos profile)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=acme-msp-console
+Group=acme-msp-console
+Environment=ACME_APPLIANCE_PROFILE=msp-panos
+ExecStart=/opt/acme-appliance/bin/msp-renew-all-customers.sh
+
+# Same account as acme-msp-console.service (this account owns every
+# customer's letsencrypt/ directories directly -- no per-customer
+# account to switch into, no sudo needed here either).
+ProtectSystem=strict
+ReadWritePaths=/etc/acme-appliance/customers /var/log/acme-appliance /var/lib/acme-appliance
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Resource ceiling so one customer's pathological renewal (e.g. a retry
+# storm against a broken DNS provider) cannot starve CPU/memory away
+# from every other customer's renewal in the same run -- this single
+# oneshot service processes every customer sequentially in one process
+# tree, so this ceiling applies to the whole run, not per-customer.
+CPUQuota=50%
+MemoryMax=512M

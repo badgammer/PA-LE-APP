@@ -906,3 +906,344 @@ README.md
   functioning init system to run a live service under) -- confirming
   that on your actual target host is the natural next step.
 
+---
+
+## Change Tree -- Clean Redesign: MSP Console Becomes a True Multi-Tenant SaaS-Style App
+
+Baseline: this same repo, immediately after the `ProtectSystem=strict`/
+`ReadWritePaths=` fix. A conversation with the appliance's actual owner
+surfaced that the `msp-panos` profile's entire architecture had been
+built on a misunderstanding: "MSP Console" was meant to let **MSP
+employees** manage many customers from one place, with customers never
+logging in themselves at all -- not a per-customer self-service portal.
+Every bug fixed in the preceding several change-tree entries (useradd/
+passwd lock contention, stale lock files, read-only-filesystem
+detection, `ProtectSystem=strict`/`ReadWritePaths=`) was a real,
+correctly-diagnosed bug in the PREVIOUS architecture -- but that whole
+architecture (one dedicated Linux account + one systemd instance +
+one nginx vhost PER CUSTOMER) was solving a problem that didn't
+actually exist. This entry replaces it with the correct one: exactly
+ONE process for the entire fleet, where a "customer" is purely a DATA
+namespace.
+
+### + New files
+
+```
+domain_logic.py                    Shared, Flask-app-independent business logic (domain/
+                                      DNS-provider/deploy-provider form parsing and display
+                                      formatting) extracted VERBATIM from webui/app.py so
+                                      BOTH webui/app.py (single-instance) and msp_console/app.py
+                                      (msp-panos) use the identical logic, never duplicated
+                                      and therefore never at risk of silently drifting apart.
+bin/msp-renew-all-customers.sh     Daily entry point for msp-panos: loops over every customer
+                                      directory and runs bin/acme-renew.sh (UNCHANGED) once per
+                                      customer with that customer's own
+                                      appliance.yaml/--config-dir/--work-dir/--logs-dir/log file
+                                      via environment variables -- replacing the earlier design's
+                                      N separate systemd timer instances with ONE timer running
+                                      this ONE script. Each customer still gets fully isolated
+                                      Let's Encrypt rate-limit accounting (their own --config-dir),
+                                      exactly as before -- just achieved by looping a single
+                                      process over each customer's directory instead of by
+                                      giving each customer its own systemd unit and Linux account.
+systemd/msp-console/acme-msp-renewal.service
+systemd/msp-console/acme-msp-renewal.timer
+                                    ONE daily timer (with a randomized delay, same reasoning as
+                                      before -- avoid every customer's renewal firing in the
+                                      same instant) running msp-renew-all-customers.sh, replacing
+                                      the removed systemd/msp/acme-renew@.timer template.
+msp_console/templates/customer_settings.html
+msp_console/templates/customer_dns_providers.html
+msp_console/templates/customer_dns_provider_form.html
+msp_console/templates/customer_deploy_providers.html
+msp_console/templates/customer_deploy_provider_form.html
+msp_console/templates/customer_domains.html
+msp_console/templates/customer_domain_form.html
+                                    Customer-scoped equivalents of every page the
+                                      single-instance profile's webui/ already had
+                                      (settings.html, dns_providers.html, dns_provider_form.html,
+                                      deploy_providers.html, deploy_provider_form.html,
+                                      domains.html, domain_form.html) -- same forms, same
+                                      client-side JS (deploy-target-type-switching, "Fetch
+                                      options"), same server-side domain_logic.py parsing,
+                                      just reached via /customers/<slug>/... and gated by that
+                                      admin's own read/write grant on that specific customer.
+```
+
+### - Removed files
+
+```
+systemd/msp/acme-webui@.service
+systemd/msp/acme-renew@.service
+systemd/msp/acme-renew@.timer         Templated PER-CUSTOMER systemd units -- there is no
+                                         longer a separate process or unit per customer at all.
+iso-build/sudoers.d/acme-msp-console  The MSP Console no longer calls sudo anywhere -- it runs
+                                         as the SAME account that already owns every customer's
+                                         files, so there is nothing left needing root escalation.
+bin/msp-tail-log.sh                   Was a root-privileged helper (via sudo) needed ONLY
+                                         because each customer's log file used to be owned by a
+                                         SEPARATE dedicated account. Now that every customer's
+                                         log lives under the console's own account, actions.py
+                                         reads it directly -- no helper script or escalation
+                                         needed at all.
+bin/msp-fleet-status.sh               Replaced by the MSP Console's own dashboard/customers
+                                         list pages, which read the exact same
+                                         cert-expiry-off-disk information this script used to
+                                         print, but through the fleet.py module both the web UI
+                                         and any future CLI tooling can share.
+deploy/nginx/acme-appliance-msp.conf.template
+                                       Per-customer nginx routing no longer applies -- the MSP
+                                         Console binds ONE port (9443) directly, exactly like
+                                         the single-instance profile's web UI binds 8443
+                                         directly; there is no per-customer vhost to template.
+docs/MSP-CONSOLE-INTEGRATION.md       Described integrating the OLD (per-customer-instance)
+                                         addon into a separate checkout -- entirely superseded
+                                         by this redesign; the MSP Console is now a native part
+                                         of this repo, not a bolt-on addon with its own
+                                         integration doc.
+```
+
+### ~ Modified files
+
+```
+webui/config_store.py
+  - EVERY function (load_config, save_config, and their internal
+    _backup_dir/_lock_path/_ensure_parent_dirs helpers) now accepts an
+    OPTIONAL explicit config_path parameter, falling back to the
+    existing module-level CONFIG_PATH (derived from
+    ACME_APPLIANCE_CONFIG) when omitted -- so webui/app.py's single-
+    instance profile calls every one of these functions completely
+    unchanged (zero-arg, exactly as before) and continues operating
+    against its one fixed file/process, while msp_console/app.py can
+    now load/save ANY customer's appliance.yaml from within the SAME
+    running process by passing that customer's own path explicitly.
+  - This is the ONLY change to this file -- the migration logic, the
+    atomic-write-with-backup mechanism, and every domain/provider
+    CRUD helper are otherwise byte-for-byte identical to before.
+
+webui/app.py
+  - Six previously-inline helper functions
+    (_target_summary/_deploy_targets_display/_additional_names_display/
+    _additional_names_for_form/_cert_lineage_dir/_cert_expiry) and two
+    form-parsing functions (_domain_from_form, _settings_from_form) were
+    EXTRACTED VERBATIM into the new domain_logic.py module (see above)
+    and are now called via domain_logic.<name>(...) instead of being
+    defined locally. Every ROUTE, URL, and piece of user-facing behavior
+    is UNCHANGED -- confirmed by diffing the full set of @app.route
+    URLs before and after this extraction (byte-identical) and by
+    re-testing every extracted function's behavior directly against
+    real files (cert lineage lookups, additional_names display/form
+    logic, target summaries, settings/domain form parsing including
+    secret-preservation-on-blank and per-name DNS provider override
+    semantics) -- all confirmed to behave identically to the original
+    inline versions.
+
+lib/profile-msp-panos.sh
+  - Completely rewritten: no longer installs templated systemd units,
+    no longer creates a per-customer Linux account or nginx template
+    reference. Installs the MSP Console's OWN two systemd units
+    (acme-msp-console.service, acme-msp-renewal.timer/.service), creates
+    the ONE "acme-msp-console" service account (now happening exactly
+    ONCE at install time, not repeatedly at runtime every time a
+    customer is provisioned -- a materially different, much lower-risk
+    situation than the useradd/lock-contention class of bugs this whole
+    profile struggled with previously), and ensures that account owns
+    the shared customer/fleet parent directories.
+
+bin/msp-provision-customer.sh
+bin/msp-deprovision-customer.sh
+  - Completely rewritten: no longer touch useradd/userdel/systemctl at
+    all -- provisioning is now just mkdir + cp (seed a starter
+    appliance.yaml); deprovisioning is just an archive + rm -rf. Both
+    still take a lightweight flock (a PLAIN filesystem lock, released
+    automatically by the kernel the instant the holding process exits
+    by ANY means, unlike useradd's own external, file-based
+    /etc/.pwd.lock which could be orphaned by an abnormally-killed
+    process) purely as defense-in-depth against two near-simultaneous
+    provisioning requests for the SAME slug -- there is no external,
+    shared OS-level lock file involved anymore, so the entire
+    stale-lock-detection/retry-with-backoff machinery those two scripts
+    previously needed (see the last several change-tree entries) no
+    longer applies and was removed.
+  - Slug length limit relaxed from 23 to 40 characters -- the old limit
+    existed specifically to keep "acmecust-<slug>" under Linux's
+    32-character username limit, which no longer applies since there is
+    no per-customer Linux account anymore.
+
+msp_console/fleet.py
+  - Rewritten around the new reality: there is no per-customer systemd
+    unit to query anymore, so webui_state()/renew_timer_state() (which
+    checked acme-webui@<slug>.service/acme-renew@<slug>.timer) are GONE.
+    customer_status() now reports domain_count (read directly from that
+    customer's own appliance.yaml) and cert expiry (unchanged, still
+    read directly off disk) -- "healthy" no longer depends on any
+    process being up, since the MSP Console itself being reachable at
+    all already implies every customer's data is reachable through it.
+  - New renew_lock_path()/redeploy_lock_path() support an OPTIONAL
+    `domain` parameter: domain=None means "this customer's entire
+    renewal run" (the lock the daily timer and the customer overview
+    page's "Trigger renewal check for all domains" button use);
+    a specific domain means "just this one domain" (the lock that
+    domain's own Renew/Redeploy buttons on the customer's Domains page
+    use) -- mirroring webui/app.py's own existing
+    _renewal_in_progress(domain=None)-means-"all" semantics exactly,
+    just parameterized per customer as well.
+
+msp_console/actions.py
+  - Every function that used to shell out via `sudo -n [...]` now
+    either runs the SAME underlying script directly with no privilege
+    escalation at all (provision_customer, deprovision_customer), or
+    was replaced entirely: restart_webui() is GONE (there is no
+    per-customer process to restart -- if the MSP Console itself needs
+    restarting, that is a single, fleet-wide systemctl action, not a
+    per-customer one); trigger_renew() became TWO functions --
+    trigger_renew_customer() (a whole customer, via
+    bin/msp-renew-all-customers.sh <slug>) and trigger_renew_domain()
+    (one domain, via bin/acme-renew.sh directly with that customer's own
+    ACME_APPLIANCE_* environment variables) -- plus a new
+    trigger_redeploy_domain() (via bin/redeploy-cert.sh, same pattern).
+    tail_log() now reads the customer's log file directly (it lives
+    under the SAME account this process already runs as) instead of via
+    the removed bin/msp-tail-log.sh root-privileged helper.
+  - All three background-triggering functions (trigger_renew_customer/
+    trigger_renew_domain/trigger_redeploy_domain) share a new
+    _run_background_with_lock() helper that writes a lock file
+    immediately, Popen's the real command as a detached background
+    process (never blocking the web request -- certbot + DNS
+    propagation waits can take minutes), and has that background
+    process remove its own lock file on exit regardless of outcome --
+    this is the exact same fire-and-forget pattern
+    webui/app.py's single-instance "Renew now"/"Redeploy" buttons
+    already use, now shared conceptually (though not literally
+    code-shared, since the two apps' Flask contexts differ) across
+    both profiles.
+
+msp_console/app.py
+  - Massively extended: every domain/DNS-provider/deploy-provider
+    management route the single-instance profile's webui/app.py has
+    (list/new/edit/delete/test-connection/fetch-options for DNS and
+    deploy providers; list/new/edit/delete/renew/redeploy/download for
+    domains; an ACME settings page) now has a customer-scoped
+    equivalent under /customers/<slug>/..., built on the SAME
+    domain_logic.py functions and config_store.py (called with that
+    customer's own config_path) the single-instance profile uses --
+    genuinely the same logic, not a reimplementation, so a future bug
+    fix or feature to the domain-form-parsing logic in domain_logic.py
+    automatically benefits both profiles.
+  - Every new route is gated by require_customer_read()/
+    require_customer_write() exactly like the pre-existing
+    customer_detail()/customer_renew() routes already were -- a
+    non-owner without at least read access to a given slug gets a 404
+    (not 403) on ALL of these new routes too, preserving the existing
+    "a customer outside your grants is invisible, not just
+    unreachable" design.
+  - customer_restart() route removed (no per-customer process to
+    restart). customer_renew() now calls the renamed
+    trigger_renew_customer(). customer_new()'s success message and
+    customer_detail.html's stats/actions were updated to match the new
+    reality (no more web UI/renewal-timer unit-state badges -- replaced
+    with domain count and a simple renewing/idle indicator).
+
+install.sh
+  - Only the --help usage text and top-of-file comment block describing
+    what the msp-panos profile does were updated to reflect the new
+    architecture -- the actual profile-selection/installation LOGIC is
+    completely unchanged (byte-for-byte identical `case`/flow control).
+
+README.md
+  - "Install profiles" comparison table, "Running the msp-panos
+    profile" section, and gotcha #11/#12 rewritten to describe the new
+    single-process, data-namespace architecture -- including the "no
+    sudo, no per-customer Linux accounts, no ProtectSystem=strict/
+    ReadWritePaths= complexity" framing that explains why this redesign
+    also eliminates, by construction, the entire multi-entry saga of
+    useradd/passwd-lock/ReadWritePaths= bugs the previous four change
+    tree entries fixed one at a time.
+```
+
+### Design notes worth knowing
+
+- **This was NOT a bug fix -- it was building the wrong thing correctly,
+  discovered only through direct conversation with the appliance's
+  actual owner.** Every one of the four preceding change-tree entries
+  (lock contention, stale locks, read-only-filesystem detection,
+  ProtectSystem=strict/ReadWritePaths=) was a real, validated,
+  correctly-fixed bug in the PREVIOUS per-customer-instance
+  architecture. None of that work was wasted effort in the sense of
+  being wrong to have done at the time -- it was the correct fix for
+  the architecture as understood then. But the underlying architecture
+  itself was solving a requirement ("give customers their own
+  self-service portal") that was never actually the requirement
+  ("let MSP staff manage many customers' certificates from one internal
+  tool, with appropriate per-customer access control"). Once that
+  distinction was made explicit, the entire class of bugs this session
+  spent several rounds fixing (all stemming from "create a Linux account
+  + systemd unit dynamically, at runtime, once per customer") disappears
+  by construction, because that architectural decision itself is gone.
+- **Every extraction into domain_logic.py was verified behaviorally
+  identical, not just "looks the same."** Rather than trust that
+  copy-pasting logic out of webui/app.py preserved behavior, each
+  extracted function was exercised directly with real inputs (a fake
+  Flask-request.form-like MultiDict, real self-signed certificates on
+  disk, realistic domain/provider configs) covering the exact edge
+  cases the original code was written to handle -- per-name DNS
+  provider override resolution (both the "list page" display variant
+  and the "edit form" variant, which deliberately differ), secret
+  field preservation when a form submits a blank password, and the
+  full validation error path (missing name, invalid DNS provider, no
+  deploy targets, invalid per-target JSON, missing required
+  type-specific fields). All confirmed to match the original inline
+  behavior exactly. Separately, the full @app.route URL set for
+  webui/app.py was diffed before and after the extraction and found
+  byte-identical, confirming no route/URL/behavior changed for the
+  single-instance profile as a side effect of this refactor.
+- **config_store.py's optional config_path parameter was the single
+  architectural key that made sharing domain_logic.py (and the entire
+  webui/ forms/validation logic) possible without a second
+  implementation.** Every call site in webui/app.py continues to call
+  these functions with zero arguments (using the module-level
+  CONFIG_PATH exactly as before); msp_console/app.py is the only new
+  caller that ever passes config_path explicitly, once per request,
+  computed from the customer slug already validated by
+  require_customer_read()/require_customer_write() earlier in the same
+  request. This was tested directly: parallel writes to two different
+  customers' config_path values were confirmed fully isolated from each
+  other AND from the single-instance profile's own default-path
+  behavior, in the same Python process.
+- **The full provision -> configure -> persist workflow was tested
+  end-to-end, not just its individual pieces.** A single test drove
+  bin/msp-provision-customer.sh's exact seeding logic, then
+  config_store.upsert_dns_provider(), upsert_deploy_provider(), and
+  domain_logic.domain_from_form() + config_store.upsert_domain() in
+  sequence -- each against that SAME customer's config_path -- and
+  confirmed the final persisted appliance.yaml contained every piece
+  correctly, with config_store's atomic backup-on-write mechanism
+  firing correctly against the customer-scoped path.
+- **The full install.sh --profile=msp-panos flow was dry-run against
+  the ACTUAL rewritten lib/profile-msp-panos.sh**, with systemctl/
+  useradd/firewall-cmd/chown stubbed (openssl was NOT stubbed -- a
+  real, valid self-signed certificate was generated and verified with
+  `openssl x509 -noout -subject -dates`) -- confirmed the resulting
+  installed systemd unit set is EXACTLY
+  {acme-msp-console.service, acme-msp-renewal.service,
+  acme-msp-renewal.timer}, with no per-customer units created at
+  install time (there are none to create -- customers are provisioned
+  afterward, purely as data). The single-instance profile's own install
+  flow was separately re-dry-run and confirmed byte-for-byte unaffected
+  (its profile script has zero changes from before this redesign).
+- **Known gaps, carried forward and newly added:**
+  `deploy_providers/iis.py` still hasn't been exercised against a real
+  Windows/IIS host. This entire redesign has not yet been validated
+  end-to-end on a REAL systemd host with a REAL running gunicorn
+  process serving real HTTP requests through Flask's routing and
+  session/CSRF machinery -- this sandbox has no functioning init system
+  and no installed Flask/gunicorn, so all Flask-layer testing here was
+  necessarily limited to direct, non-HTTP invocation of route handler
+  LOGIC (via domain_logic.py's pure functions and Jinja2 template
+  rendering with realistic mock context) rather than actual HTTP
+  request/response cycles through a live Flask app. Standing up a real
+  msp-panos host and clicking through the full
+  provision -> add DNS provider -> add deploy target -> add domain ->
+  trigger renewal -> deprovision workflow in an actual browser remains
+  the single most valuable next validation step before relying on this
+  in production.

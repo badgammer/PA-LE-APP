@@ -16,20 +16,37 @@ grants per customer).
 This app is ONLY ever installed/enabled under the msp-panos profile --
 see lib/profile-msp-panos.sh.
 """
+import io
 import os
 import secrets
 import sys
+import zipfile
 
 from flask import (
-    Flask, render_template, request, redirect, url_for, session, flash, abort, jsonify
+    Flask, render_template, request, redirect, url_for, session, flash, abort, jsonify,
+    send_file
 )
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "webui"))
 
 import auth  # noqa: E402
 import fleet  # noqa: E402
 import actions  # noqa: E402
+import config_store as store  # noqa: E402
+import test_connections  # noqa: E402
+import domain_logic  # noqa: E402
+from dns_providers import PROVIDER_FIELDS  # noqa: E402
+from deploy_providers import INSTANCE_FIELDS, TARGET_FIELDS  # noqa: E402
+from cert_naming import safe_cert_name  # noqa: E402
+
+PLACEHOLDER_EMAIL_DOMAINS = {
+    "example.com", "example.org", "example.net", "example.edu",
+    "test.com", "localhost", "invalid",
+}
+PRODUCTION_ACME_SERVER = "https://acme-v02.api.letsencrypt.org/directory"
+STAGING_ACME_SERVER = "https://acme-staging-v02.api.letsencrypt.org/directory"
 
 SECRET_KEY_PATH = os.environ.get(
     "ACME_MSP_CONSOLE_SECRET_KEY_FILE", "/etc/acme-appliance/msp-console/secret_key"
@@ -141,6 +158,30 @@ def require_customer_read(slug: str):
 def require_customer_write(slug: str):
     if not auth.can_write_customer(current_user(), slug):
         abort(404)
+
+
+def mask(value: str) -> str:
+    if not value:
+        return ""
+    if len(value) <= 4:
+        return "****"
+    return value[:2] + "*" * (len(value) - 4) + value[-2:]
+
+
+def _customer_config_path(slug: str) -> str:
+    return os.path.join(fleet.CUSTOMERS_DIR, slug, "appliance.yaml")
+
+
+def _customer_live_dir(slug: str) -> str:
+    return os.path.join(fleet.CUSTOMERS_DIR, slug, "letsencrypt", "live")
+
+
+def _load_customer_config(slug: str) -> dict:
+    return store.load_config(config_path=_customer_config_path(slug))
+
+
+def _save_customer_config(slug: str, cfg: dict) -> None:
+    store.save_config(cfg, config_path=_customer_config_path(slug))
 
 
 # ------------------------------------------------------------------ auth
@@ -270,9 +311,8 @@ def customer_new():
                 actions.provision_customer(slug)
                 _console_log(f"'{current_user()}' provisioned customer '{slug}'")
                 flash(
-                    f"Customer '{slug}' provisioned. Add the nginx server block shown "
-                    "in the CLI output (or see deploy/nginx/acme-appliance-msp.conf.template) "
-                    "to make it reachable, then have them visit /setup on their instance.",
+                    f"Customer '{slug}' provisioned. Add DNS provider(s), deploy target(s), "
+                    "and domain(s) for this customer from its detail page below.",
                     "success",
                 )
                 return redirect(url_for("customer_detail", slug=slug))
@@ -287,6 +327,7 @@ def customer_detail(slug):
     require_customer_read(slug)
     status = fleet.customer_status(slug)
     grant = auth.customer_grant_level(current_user(), slug)
+    cfg = _load_customer_config(slug)
     log_lines = None
     log_error = None
     try:
@@ -294,7 +335,7 @@ def customer_detail(slug):
     except actions.ActionError as exc:
         log_error = str(exc)
     return render_template(
-        "customer_detail.html", status=status, grant=grant,
+        "customer_detail.html", status=status, grant=grant, cfg=cfg,
         log_lines=log_lines, log_error=log_error,
     )
 
@@ -305,25 +346,11 @@ def customer_renew(slug):
     require_customer_write(slug)
     check_csrf()
     try:
-        actions.trigger_renew(slug)
-        _console_log(f"'{current_user()}' triggered renewal for '{slug}'")
-        flash(f"Renewal check started for '{slug}' in the background.", "success")
+        msg = actions.trigger_renew_customer(slug)
+        _console_log(f"'{current_user()}' triggered renewal for all of '{slug}''s domains")
+        flash(msg, "success")
     except actions.ActionError as exc:
         flash(f"Could not start renewal for '{slug}': {exc}", "error")
-    return redirect(url_for("customer_detail", slug=slug))
-
-
-@app.route("/customers/<slug>/restart", methods=["POST"])
-@login_required
-def customer_restart(slug):
-    require_customer_write(slug)
-    check_csrf()
-    try:
-        actions.restart_webui(slug)
-        _console_log(f"'{current_user()}' restarted web UI for '{slug}'")
-        flash(f"Web UI restarted for '{slug}'.", "success")
-    except actions.ActionError as exc:
-        flash(f"Could not restart web UI for '{slug}': {exc}", "error")
     return redirect(url_for("customer_detail", slug=slug))
 
 
@@ -354,6 +381,462 @@ def customer_log_fragment(slug):
         return jsonify({"ok": True, "log": actions.tail_log(slug, lines=100)})
     except actions.ActionError as exc:
         return jsonify({"ok": False, "error": str(exc)})
+
+
+# ---------------------------------------------------------- customer settings
+
+@app.route("/customers/<slug>/settings", methods=["GET", "POST"])
+@login_required
+def customer_settings(slug):
+    require_customer_read(slug)
+    cfg = _load_customer_config(slug)
+    if request.method == "POST":
+        require_customer_write(slug)
+        check_csrf()
+        email = request.form.get("acme_email", "").strip()
+        server_choice = request.form.get("acme_server_choice", "production")
+        custom_server = request.form.get("acme_server_custom", "").strip()
+
+        error = None
+        if not email or "@" not in email or email.startswith("@") or email.endswith("@"):
+            error = "Enter a valid email address."
+        else:
+            domain_part = email.rsplit("@", 1)[-1].lower()
+            if domain_part in PLACEHOLDER_EMAIL_DOMAINS:
+                error = (
+                    f"'{domain_part}' is a reserved/placeholder domain -- Let's Encrypt "
+                    "will reject account registration with this address. Use a real, "
+                    "monitored email address (this is where certificate expiration "
+                    "warnings will be sent)."
+                )
+
+        if server_choice == "production":
+            server = PRODUCTION_ACME_SERVER
+        elif server_choice == "staging":
+            server = STAGING_ACME_SERVER
+        else:
+            server = custom_server
+            if not error and not server.startswith("https://"):
+                error = "Custom ACME server URL must start with https://"
+
+        if error:
+            flash(error, "error")
+        else:
+            cfg["acme"]["email"] = email
+            cfg["acme"]["server"] = server
+            _save_customer_config(slug, cfg)
+            _console_log(f"'{current_user()}' updated ACME settings for '{slug}'")
+            flash("ACME settings updated.", "success")
+            return redirect(url_for("customer_settings", slug=slug))
+
+    current_server = cfg["acme"].get("server", "")
+    if current_server == PRODUCTION_ACME_SERVER:
+        server_choice = "production"
+    elif current_server == STAGING_ACME_SERVER:
+        server_choice = "staging"
+    else:
+        server_choice = "custom"
+
+    grant = auth.customer_grant_level(current_user(), slug)
+    return render_template(
+        "customer_settings.html", slug=slug, cfg=cfg, grant=grant, server_choice=server_choice,
+        production_server=PRODUCTION_ACME_SERVER, staging_server=STAGING_ACME_SERVER,
+    )
+
+
+# --------------------------------------------------------- customer DNS providers
+
+@app.route("/customers/<slug>/dns-providers")
+@login_required
+def customer_dns_providers_list(slug):
+    require_customer_read(slug)
+    cfg = _load_customer_config(slug)
+    grant = auth.customer_grant_level(current_user(), slug)
+    provider_labels = {k: v["label"] for k, v in PROVIDER_FIELDS.items()}
+    return render_template(
+        "customer_dns_providers.html", slug=slug, grant=grant,
+        providers=cfg["dns_providers"], provider_labels=provider_labels, mask=mask,
+    )
+
+
+@app.route("/customers/<slug>/dns-providers/new", methods=["GET", "POST"])
+@login_required
+def customer_dns_provider_new(slug):
+    require_customer_write(slug)
+    cfg = _load_customer_config(slug)
+    selected_type = request.values.get("type", next(iter(PROVIDER_FIELDS)))
+    if request.method == "POST":
+        check_csrf()
+        instance_name = request.form.get("instance_name", "").strip()
+        provider_type = request.form.get("type", "").strip()
+        if not instance_name or provider_type not in PROVIDER_FIELDS:
+            flash("A unique name and a valid provider type are required.", "error")
+        elif instance_name in cfg["dns_providers"]:
+            flash(f"A DNS provider named '{instance_name}' already exists.", "error")
+        else:
+            settings = domain_logic.settings_from_form(PROVIDER_FIELDS, provider_type, existing_settings={}, form=request.form)
+            store.upsert_dns_provider(cfg, instance_name, provider_type, settings)
+            _save_customer_config(slug, cfg)
+            _console_log(f"'{current_user()}' added DNS provider '{instance_name}' for '{slug}'")
+            flash(f"Added DNS provider '{instance_name}'.", "success")
+            return redirect(url_for("customer_dns_providers_list", slug=slug))
+        selected_type = provider_type or selected_type
+    return render_template(
+        "customer_dns_provider_form.html", slug=slug, mode="new", instance_name="",
+        provider_fields=PROVIDER_FIELDS, selected_type=selected_type, existing_settings={},
+    )
+
+
+@app.route("/customers/<slug>/dns-providers/<instance_name>/edit", methods=["GET", "POST"])
+@login_required
+def customer_dns_provider_edit(slug, instance_name):
+    require_customer_write(slug)
+    cfg = _load_customer_config(slug)
+    instance = cfg["dns_providers"].get(instance_name)
+    if not instance:
+        abort(404)
+    provider_type = instance["type"]
+    if request.method == "POST":
+        check_csrf()
+        settings = domain_logic.settings_from_form(
+            PROVIDER_FIELDS, provider_type, existing_settings=instance.get("settings", {}), form=request.form
+        )
+        store.upsert_dns_provider(cfg, instance_name, provider_type, settings)
+        _save_customer_config(slug, cfg)
+        _console_log(f"'{current_user()}' updated DNS provider '{instance_name}' for '{slug}'")
+        flash(f"Updated DNS provider '{instance_name}'.", "success")
+        return redirect(url_for("customer_dns_providers_list", slug=slug))
+    return render_template(
+        "customer_dns_provider_form.html", slug=slug, mode="edit", instance_name=instance_name,
+        provider_fields=PROVIDER_FIELDS, selected_type=provider_type,
+        existing_settings=instance.get("settings", {}),
+    )
+
+
+@app.route("/customers/<slug>/dns-providers/<instance_name>/delete", methods=["POST"])
+@login_required
+def customer_dns_provider_delete(slug, instance_name):
+    require_customer_write(slug)
+    check_csrf()
+    cfg = _load_customer_config(slug)
+    used_by = store.dns_provider_in_use(cfg, instance_name)
+    if used_by:
+        flash(f"Cannot delete '{instance_name}' -- still used by domain(s): {', '.join(used_by)}.", "error")
+    else:
+        store.delete_dns_provider(cfg, instance_name)
+        _save_customer_config(slug, cfg)
+        _console_log(f"'{current_user()}' deleted DNS provider '{instance_name}' for '{slug}'")
+        flash(f"Deleted DNS provider '{instance_name}'.", "success")
+    return redirect(url_for("customer_dns_providers_list", slug=slug))
+
+
+@app.route("/customers/<slug>/dns-providers/<instance_name>/test", methods=["POST"])
+@login_required
+def customer_dns_provider_test(slug, instance_name):
+    require_customer_write(slug)
+    check_csrf()
+    cfg = _load_customer_config(slug)
+    instance = cfg["dns_providers"].get(instance_name)
+    if not instance:
+        abort(404)
+    ok, message = test_connections.test_dns_provider(instance["type"], instance.get("settings", {}))
+    if ok is True:
+        flash(f"'{instance_name}': {message}", "success")
+    elif ok is False:
+        flash(f"'{instance_name}' test failed: {message}", "error")
+    else:
+        flash(f"'{instance_name}': {message}", "error")
+    return redirect(url_for("customer_dns_providers_list", slug=slug))
+
+
+# ------------------------------------------------------ customer deploy providers
+
+@app.route("/customers/<slug>/deploy-providers")
+@login_required
+def customer_deploy_providers_list(slug):
+    require_customer_read(slug)
+    cfg = _load_customer_config(slug)
+    grant = auth.customer_grant_level(current_user(), slug)
+    provider_labels = {k: v["label"] for k, v in INSTANCE_FIELDS.items()}
+    return render_template(
+        "customer_deploy_providers.html", slug=slug, grant=grant,
+        providers=cfg["deploy_providers"], provider_labels=provider_labels, mask=mask,
+    )
+
+
+@app.route("/customers/<slug>/deploy-providers/new", methods=["GET", "POST"])
+@login_required
+def customer_deploy_provider_new(slug):
+    require_customer_write(slug)
+    cfg = _load_customer_config(slug)
+    selected_type = request.values.get("type", next(iter(INSTANCE_FIELDS)))
+    if request.method == "POST":
+        check_csrf()
+        instance_name = request.form.get("instance_name", "").strip()
+        provider_type = request.form.get("type", "").strip()
+        if not instance_name or provider_type not in INSTANCE_FIELDS:
+            flash("A unique name and a valid deploy target type are required.", "error")
+        elif instance_name in cfg["deploy_providers"]:
+            flash(f"A deploy target named '{instance_name}' already exists.", "error")
+        else:
+            settings = domain_logic.settings_from_form(INSTANCE_FIELDS, provider_type, existing_settings={}, form=request.form)
+            store.upsert_deploy_provider(cfg, instance_name, provider_type, settings)
+            _save_customer_config(slug, cfg)
+            _console_log(f"'{current_user()}' added deploy target '{instance_name}' for '{slug}'")
+            flash(f"Added deploy target '{instance_name}'.", "success")
+            return redirect(url_for("customer_deploy_providers_list", slug=slug))
+        selected_type = provider_type or selected_type
+    return render_template(
+        "customer_deploy_provider_form.html", slug=slug, mode="new", instance_name="",
+        provider_fields=INSTANCE_FIELDS, selected_type=selected_type, existing_settings={},
+    )
+
+
+@app.route("/customers/<slug>/deploy-providers/<instance_name>/edit", methods=["GET", "POST"])
+@login_required
+def customer_deploy_provider_edit(slug, instance_name):
+    require_customer_write(slug)
+    cfg = _load_customer_config(slug)
+    instance = cfg["deploy_providers"].get(instance_name)
+    if not instance:
+        abort(404)
+    provider_type = instance["type"]
+    if request.method == "POST":
+        check_csrf()
+        settings = domain_logic.settings_from_form(
+            INSTANCE_FIELDS, provider_type, existing_settings=instance.get("settings", {}), form=request.form
+        )
+        store.upsert_deploy_provider(cfg, instance_name, provider_type, settings)
+        _save_customer_config(slug, cfg)
+        _console_log(f"'{current_user()}' updated deploy target '{instance_name}' for '{slug}'")
+        flash(f"Updated deploy target '{instance_name}'.", "success")
+        return redirect(url_for("customer_deploy_providers_list", slug=slug))
+    return render_template(
+        "customer_deploy_provider_form.html", slug=slug, mode="edit", instance_name=instance_name,
+        provider_fields=INSTANCE_FIELDS, selected_type=provider_type,
+        existing_settings=instance.get("settings", {}),
+    )
+
+
+@app.route("/customers/<slug>/deploy-providers/<instance_name>/delete", methods=["POST"])
+@login_required
+def customer_deploy_provider_delete(slug, instance_name):
+    require_customer_write(slug)
+    check_csrf()
+    cfg = _load_customer_config(slug)
+    used_by = store.deploy_provider_in_use(cfg, instance_name)
+    if used_by:
+        flash(f"Cannot delete '{instance_name}' -- still used by domain(s): {', '.join(used_by)}.", "error")
+    else:
+        store.delete_deploy_provider(cfg, instance_name)
+        _save_customer_config(slug, cfg)
+        _console_log(f"'{current_user()}' deleted deploy target '{instance_name}' for '{slug}'")
+        flash(f"Deleted deploy target '{instance_name}'.", "success")
+    return redirect(url_for("customer_deploy_providers_list", slug=slug))
+
+
+@app.route("/customers/<slug>/deploy-providers/<instance_name>/test", methods=["POST"])
+@login_required
+def customer_deploy_provider_test(slug, instance_name):
+    require_customer_write(slug)
+    check_csrf()
+    cfg = _load_customer_config(slug)
+    instance = cfg["deploy_providers"].get(instance_name)
+    if not instance:
+        abort(404)
+    ok, message = test_connections.test_deploy_provider(instance["type"], instance.get("settings", {}))
+    if ok is True:
+        flash(f"'{instance_name}': {message}", "success")
+    elif ok is False:
+        flash(f"'{instance_name}' test failed: {message}", "error")
+    else:
+        flash(f"'{instance_name}': {message}", "error")
+    return redirect(url_for("customer_deploy_providers_list", slug=slug))
+
+
+@app.route("/customers/<slug>/deploy-providers/<instance_name>/options")
+@login_required
+def customer_deploy_provider_options(slug, instance_name):
+    require_customer_read(slug)
+    cfg = _load_customer_config(slug)
+    instance = cfg["deploy_providers"].get(instance_name)
+    if instance is None:
+        return jsonify({"ok": False, "error": f"Unknown deploy target '{instance_name}'"}), 404
+    kwargs = {}
+    if request.args.get("vsys"):
+        kwargs["vsys"] = request.args.get("vsys")
+    ok, result = test_connections.list_target_options(instance["type"], instance.get("settings", {}), **kwargs)
+    if ok:
+        return jsonify({"ok": True, "options": result})
+    return jsonify({"ok": False, "error": result})
+
+
+# ------------------------------------------------------------- customer domains
+
+@app.route("/customers/<slug>/domains")
+@login_required
+def customer_domains_list(slug):
+    require_customer_read(slug)
+    cfg = _load_customer_config(slug)
+    grant = auth.customer_grant_level(current_user(), slug)
+    live_dir = _customer_live_dir(slug)
+    rows = []
+    for d in cfg["domains"]:
+        rows.append({
+            "entry": d,
+            "additional_names_display": domain_logic.additional_names_display(d),
+            "deploy_targets_display": domain_logic.deploy_targets_display(d, cfg["deploy_providers"]),
+            "cert_expiry": domain_logic.cert_expiry(d["name"], live_dir),
+            "renewal_in_progress": fleet.renewal_in_progress(slug, d["name"]),
+            "redeploy_in_progress": fleet.redeploy_in_progress(slug, d["name"]),
+            "has_cert": domain_logic.cert_lineage_dir(d["name"], live_dir) is not None,
+        })
+    return render_template(
+        "customer_domains.html", slug=slug, grant=grant, rows=rows,
+        any_renewal_in_progress=fleet.renewal_in_progress(slug),
+    )
+
+
+@app.route("/customers/<slug>/domains/new", methods=["GET", "POST"])
+@login_required
+def customer_domain_new(slug):
+    require_customer_write(slug)
+    cfg = _load_customer_config(slug)
+    if request.method == "POST":
+        check_csrf()
+        name, entry, error = domain_logic.domain_from_form(cfg, request.form, TARGET_FIELDS)
+        if error:
+            flash(error, "error")
+        elif store.get_domain(cfg, name):
+            flash(f"A domain entry for '{name}' already exists.", "error")
+        else:
+            store.upsert_domain(cfg, name, entry)
+            _save_customer_config(slug, cfg)
+            _console_log(f"'{current_user()}' added domain '{name}' for '{slug}'")
+            flash(f"Added domain {name}.", "success")
+            return redirect(url_for("customer_domains_list", slug=slug))
+    return render_template(
+        "customer_domain_form.html", slug=slug, mode="new", entry=None, has_cert=False,
+        redeploy_in_progress=False, additional_names_for_form=[], deploy_targets_for_form=[],
+        providers=cfg["dns_providers"], deploy_providers=cfg["deploy_providers"],
+        target_fields_schema=TARGET_FIELDS,
+    )
+
+
+@app.route("/customers/<slug>/domains/<path:name>/edit", methods=["GET", "POST"])
+@login_required
+def customer_domain_edit(slug, name):
+    require_customer_write(slug)
+    cfg = _load_customer_config(slug)
+    entry = store.get_domain(cfg, name)
+    if not entry:
+        abort(404)
+    if request.method == "POST":
+        check_csrf()
+        new_name, new_entry, error = domain_logic.domain_from_form(cfg, request.form, TARGET_FIELDS)
+        if error:
+            flash(error, "error")
+        else:
+            store.delete_domain(cfg, name)
+            store.upsert_domain(cfg, new_name, new_entry)
+            _save_customer_config(slug, cfg)
+            _console_log(f"'{current_user()}' updated domain '{new_name}' for '{slug}'")
+            flash(f"Updated domain {new_name}.", "success")
+            return redirect(url_for("customer_domains_list", slug=slug))
+    live_dir = _customer_live_dir(slug)
+    return render_template(
+        "customer_domain_form.html", slug=slug, mode="edit", entry=entry,
+        has_cert=domain_logic.cert_lineage_dir(name, live_dir) is not None,
+        redeploy_in_progress=fleet.redeploy_in_progress(slug, name),
+        additional_names_for_form=domain_logic.additional_names_for_form(entry),
+        deploy_targets_for_form=entry.get("deploy_targets", []),
+        providers=cfg["dns_providers"], deploy_providers=cfg["deploy_providers"],
+        target_fields_schema=TARGET_FIELDS,
+    )
+
+
+@app.route("/customers/<slug>/domains/<path:name>/delete", methods=["POST"])
+@login_required
+def customer_domain_delete(slug, name):
+    require_customer_write(slug)
+    check_csrf()
+    cfg = _load_customer_config(slug)
+    store.delete_domain(cfg, name)
+    _save_customer_config(slug, cfg)
+    _console_log(f"'{current_user()}' deleted domain '{name}' for '{slug}'")
+    flash(f"Deleted domain {name}.", "success")
+    return redirect(url_for("customer_domains_list", slug=slug))
+
+
+@app.route("/customers/<slug>/domains/<path:name>/renew", methods=["POST"])
+@login_required
+def customer_domain_renew(slug, name):
+    require_customer_write(slug)
+    check_csrf()
+    cfg = _load_customer_config(slug)
+    if not store.get_domain(cfg, name):
+        abort(404)
+    force = request.form.get("force") == "on"
+    try:
+        msg = actions.trigger_renew_domain(slug, name, force=force)
+        _console_log(f"'{current_user()}' triggered renewal for '{name}' ('{slug}'){' [forced]' if force else ''}")
+        flash(msg, "success")
+    except actions.ActionError as exc:
+        flash(f"Could not start renewal for '{name}': {exc}", "error")
+    return redirect(url_for("customer_domains_list", slug=slug))
+
+
+@app.route("/customers/<slug>/domains/<path:name>/redeploy", methods=["POST"])
+@login_required
+def customer_domain_redeploy(slug, name):
+    require_customer_write(slug)
+    check_csrf()
+    cfg = _load_customer_config(slug)
+    if not store.get_domain(cfg, name):
+        abort(404)
+    live_dir = _customer_live_dir(slug)
+    if not domain_logic.cert_lineage_dir(name, live_dir):
+        flash(f"No certificate has been issued yet for '{name}' -- nothing to redeploy. Use 'Renew now' first.", "error")
+        return redirect(url_for("customer_domains_list", slug=slug))
+    try:
+        msg = actions.trigger_redeploy_domain(slug, name)
+        _console_log(f"'{current_user()}' triggered redeploy for '{name}' ('{slug}')")
+        flash(msg, "success")
+    except actions.ActionError as exc:
+        flash(f"Could not start redeploy for '{name}': {exc}", "error")
+    return redirect(url_for("customer_domains_list", slug=slug))
+
+
+@app.route("/customers/<slug>/domains/<path:name>/download")
+@login_required
+def customer_domain_download(slug, name):
+    require_customer_read(slug)
+    cfg = _load_customer_config(slug)
+    if not store.get_domain(cfg, name):
+        abort(404)
+    live_dir = _customer_live_dir(slug)
+    lineage_dir = domain_logic.cert_lineage_dir(name, live_dir)
+    if not lineage_dir:
+        flash(f"No certificate has been issued yet for '{name}'.", "error")
+        return redirect(url_for("customer_domains_list", slug=slug))
+
+    buf = io.BytesIO()
+    included = []
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for fname in ("fullchain.pem", "cert.pem", "chain.pem", "privkey.pem"):
+            fpath = os.path.join(lineage_dir, fname)
+            if os.path.exists(fpath):
+                zf.write(fpath, arcname=fname)
+                included.append(fname)
+    buf.seek(0)
+
+    _console_log(
+        f"'{current_user()}' downloaded certificate files for '{name}' ('{slug}') "
+        f"({', '.join(included)})"
+    )
+
+    zip_name = f"{safe_cert_name(name)}-certs.zip"
+    return send_file(buf, mimetype="application/zip", as_attachment=True, download_name=zip_name)
 
 
 # ---------------------------------------------------------------- admins

@@ -13,8 +13,9 @@ same run.
 This one codebase also supports **two install profiles** chosen at
 install time (see [Install profiles](#install-profiles) below) -- a
 single-tenant profile with every feature enabled, and a multi-tenant
-"MSP" profile (one systemd instance per customer, PAN-OS deploy targets
-only) for running this as a shared fleet host across multiple customers.
+**MSP Console** profile for running this as a shared fleet host managed
+by your own staff on behalf of many customers (customers themselves
+never log in -- see [Running the msp-panos profile](#running-the-msp-panos-profile)).
 
 ## Install profiles
 
@@ -25,13 +26,14 @@ are 100% identical either way; only what gets *enabled* differs:
 
 | | `single-instance` | `msp-panos` |
 |---|---|---|
-| Tenancy | one tenant (your own org) | N customers, one systemd instance each, sharing one host and one code install |
+| Tenancy | one tenant (your own org), one web UI | N customer *namespaces*, managed by MSP staff from ONE shared MSP Console process |
+| Who logs in | your own admin account(s) | your MSP staff only, via the MSP Console's own owner/staff accounts -- customers never log in themselves |
 | Deploy target types available | PAN-OS + Windows/IIS (WinRM) | PAN-OS only -- `pywinrm` is never even installed, and `deploy_providers/__init__.py` never imports the `iis` type at all |
-| System Updates feature (OS package checks/updates, host reboot) | Enabled | **Disabled entirely** -- it operates on the shared host via a sudoers rule tied to one fixed service account, which has no safe per-tenant equivalent |
-| Identity model | one shared `acme-appliance` service account | one dedicated system account per customer (`acmecust-<slug>`) |
-| systemd units | static (`acme-webui.service`, `acme-renew.timer`) | templated (`acme-webui@.service`, `acme-renew@.service`, `acme-renew@.timer`) |
-| Web UI reachability | gunicorn binds `0.0.0.0:8443` directly, self-signed TLS | gunicorn binds a per-customer unix socket; nginx (not included, see `deploy/nginx/`) terminates TLS and routes per customer |
-| Config path | fixed `/etc/acme-appliance/appliance.yaml` | one per customer, under `/etc/acme-appliance/customers/<slug>/` |
+| System Updates feature (OS package checks/updates, host reboot) | Enabled | **Disabled entirely** -- it operates on the shared host and has no safe per-tenant equivalent |
+| Identity model | one `acme-appliance` service account | one `acme-msp-console` service account -- the SAME account owns every customer's data; there is no separate account or process per customer |
+| Process model | one `acme-webui.service` | one `acme-msp-console.service` (the web UI) + one `acme-msp-renewal.timer` (daily renewal loop across every customer) |
+| Config path | fixed `/etc/acme-appliance/appliance.yaml` | one per customer namespace, under `/etc/acme-appliance/customers/<slug>/appliance.yaml` |
+| Let's Encrypt rate-limit isolation | one certbot `--config-dir` for the whole appliance | each customer namespace still gets its OWN certbot `--config-dir` -- rate-limit accounting is isolated per customer even though there's only one process |
 
 ```bash
 sudo ./install.sh                          # interactive prompt
@@ -40,8 +42,8 @@ sudo ./install.sh --profile=msp-panos
 ```
 
 `install.sh` refuses to switch an already-provisioned host from one
-profile to the other -- the identity and directory models differ enough
-that a clean re-provision (fresh OS install) is the only supported path
+profile to the other -- the directory/config models differ enough that
+a clean re-provision (fresh OS install) is the only supported path
 between them. See [Getting a running appliance](#getting-a-running-appliance)
 for how `iso-build/bootstrap-appliance.sh` and `install.sh` fit together,
 and [Running the msp-panos profile](#running-the-msp-panos-profile) for
@@ -236,49 +238,45 @@ same dnf transaction, since a fresh Rocky Linux 9 "minimal" ISO install
 does not ship it and this repo's own quick-start instructs cloning with
 `git` before that script is even reachable.
 
-### 11. MSP Console has its own account store and its own narrow sudoers rule
+### 11. MSP Console has its own account store, completely separate from any customer's data
 The MSP Console (`msp_console/`, msp-panos profile only) runs as a
-dedicated `acme-msp-console` system account -- never root, never any
-customer's own account -- and every privileged fleet action it performs
-(provisioning, deprovisioning, triggering a renewal, restarting a
-customer's web UI, reading a customer's log) is delegated through a
-handful of exact-match sudoers rules in
-`iso-build/sudoers.d/acme-msp-console`. Its admin database
+dedicated `acme-msp-console` system account. Its admin database
 (`/etc/acme-appliance/msp-console/admins.yaml`) is completely separate
-from any customer's own `users.yaml` -- an MSP Console login grants no
-access whatsoever to a customer's DNS providers, deploy targets, or
-domain configuration, and vice versa. Per-customer access for
-non-owner (staff) accounts is enforced as a 404, not a 403, on every
-route for a customer outside that admin's grant table -- so a staff
-account cannot even confirm a customer they lack access to exists.
+from any customer's own domain/provider configuration -- an MSP Console
+login grants access only to whichever customers that specific admin has
+been explicitly granted, never anything else by default. Per-customer
+access for non-owner (staff) accounts is enforced as a 404, not a 403,
+on every route for a customer outside that admin's grant table -- so a
+staff account cannot even confirm a customer they lack access to
+exists.
 
-### 12. MSP Console's `ProtectSystem=strict` needs the right `ReadWritePaths=`
-The `acme-msp-console.service` systemd unit runs with
-`ProtectSystem=strict`, which bind-mounts the ENTIRE filesystem read-only
-for that unit's whole process tree -- and this restriction is enforced
-by the kernel at the mount layer, so it is **not** bypassed by
-privilege escalation. Since `sudo` does not create a new mount
-namespace (it only changes UID/capabilities), every script the console
-invokes via its sudoers rule (`msp-provision-customer.sh`,
-`msp-deprovision-customer.sh`, and everything they in turn call --
-`useradd`, `userdel`, `systemctl enable`) still runs inside this SAME
-read-only-except-`ReadWritePaths` view, even while running as root.
-`ReadWritePaths=` must therefore include `/etc` (so `useradd`/`userdel`
-can write `/etc/passwd`, `/etc/shadow`, and their lock files),
-`/etc/acme-appliance/customers`, `/var/lib/acme-appliance`, and
-`/run/acme-appliance` -- not just the console's own
-`/etc/acme-appliance/msp-console` and `/var/log/acme-appliance`.
-Without this, every provisioning/deprovisioning attempt fails
-identically with `useradd: cannot lock /etc/passwd; try again later.`
-(or `Read-only file system` when a stale-lock cleanup attempt hits the
-same restriction) -- **on every host, VM, and CPU architecture**,
-since the cause is this unit file itself, not any particular disk or
-hardware. Adding `/etc` to `ReadWritePaths=` does **not** hand the
-unprivileged `acme-msp-console` account direct write access to
-`/etc/passwd` -- it only lifts the mount-level restriction; ordinary
-Unix file permissions (DAC) are a separate, still fully-enforced layer
-on top, so only root (reached exclusively via the sudoers rules) can
-actually write there.
+### 12. No `sudo`, no per-customer Linux accounts, no `ProtectSystem=strict`/`ReadWritePaths=` complexity
+An earlier iteration of the msp-panos profile ran one dedicated Linux
+account and one systemd instance PER CUSTOMER, which required the MSP
+Console to escalate via `sudo` into a narrow sudoers rule for every
+customer lifecycle action (`useradd`, `userdel`, `systemctl enable`,
+etc.). That design hit a real, reproducible class of bugs: systemd's
+`ProtectSystem=strict` bind-mounts the filesystem read-only at the
+KERNEL mount layer, a restriction `sudo` cannot bypass (it only changes
+UID/capabilities, not the mount namespace) -- so every provisioning
+attempt failed identically with `useradd: cannot lock /etc/passwd; try
+again later.` on every host, VM, and CPU architecture tested, since the
+cause was the unit file's `ReadWritePaths=`, not any particular disk or
+hardware.
+
+**This was fixed by removing the need for it entirely, not by widening
+`ReadWritePaths=`.** Under the current design, a "customer" is purely a
+DATA namespace served by the ONE MSP Console process -- there is no
+per-customer Linux account or systemd unit to create at runtime, so
+there is no `useradd`/`userdel` call anywhere in this profile anymore,
+and therefore no `sudo` call in `msp_console/actions.py` either. The
+`acme-msp-console.service` unit can therefore use BOTH
+`ProtectSystem=strict` AND `NoNewPrivileges=true` (the earlier design
+could not use the latter, since `sudo` is a setuid-root binary that
+`NoNewPrivileges=true` would have silently blocked), and
+`ReadWritePaths=` only ever needs to list the exact directories this
+one account's own data lives under -- never `/etc` as a whole. This is
+a genuine hardening improvement, not just a simplification.
 
 ## Migrating an existing (pre-multi-target) appliance.yaml
 
@@ -336,69 +334,76 @@ image build options.
 
 ## Running the msp-panos profile
 
-Once a host is installed with `--profile=msp-panos`, the primary way to
-manage the fleet is the **MSP Console** dashboard at
-`https://<host>:9443/` -- first visit prompts you to create the initial
-owner account. From there you can:
+Once a host is installed with `--profile=msp-panos`, **only your MSP
+staff log in** -- there is one shared web UI, the **MSP Console**, at
+`https://<host>:9443/`. Customers never get their own login or their
+own URL; every customer is managed as a data namespace from within this
+one console by whichever staff have been granted access to them. First
+visit prompts you to create the initial owner account.
 
-- Add and remove customers (equivalent to `bin/msp-provision-customer.sh`
-  / `bin/msp-deprovision-customer.sh`, without needing shell access)
-- View fleet-wide health (cert expiry, service state) and each
+From the console, an owner (or a staff member with write access to a
+given customer) can:
+
+- Add and remove customers (equivalent to
+  `bin/msp-provision-customer.sh` / `bin/msp-deprovision-customer.sh`,
+  without needing shell access)
+- Manage that customer's own DNS providers, deploy targets, and domains
+  -- the same forms and workflow the single-instance profile's web UI
+  has always had, just reached via `/customers/<slug>/...` instead of
+  the top level
+- View fleet-wide health (domain counts, soonest cert expiry) and each
   customer's recent log activity
-- Trigger a renewal check or restart a hung customer's web UI
+- Trigger a renewal check for an entire customer, or for just one of
+  their domains, from that domain's own Renew/Redeploy buttons
 - Add other MSP staff accounts, each with their own per-customer
   read/write grants -- a staff account only ever sees the customers
   explicitly granted to it; anything else is completely invisible to
-  them, not just hidden behind disabled buttons
+  them (a 404, not a hidden button)
 
 Owners have full read/write access to every customer and can manage
 other admin accounts; staff accounts are scoped per-customer via an
 explicit grant table (read, read+write, or no access at all). The MSP
 Console runs as its own unprivileged system account
 (`acme-msp-console`), with its own separate admin database -- logging
-into it grants no access whatsoever to any customer's own DNS
-providers, deploy targets, or domain configuration. Every privileged
-fleet action it performs (provisioning, deprovisioning, triggering a
-renewal, restarting a customer's web UI, reading a customer's log) goes
-through a narrowly-scoped sudoers rule (see
-`iso-build/sudoers.d/acme-msp-console`), delegating to the exact same
-`bin/msp-*.sh` scripts described below.
+into it grants no MORE access to any customer's data than that admin's
+own grants specify.
+
+**There is exactly one running process for the entire fleet** -- unlike
+an earlier design, a "customer" here is purely a data namespace (its
+own `appliance.yaml`, its own certbot `--config-dir` for isolated Let's
+Encrypt rate-limit accounting), not a separate Linux account or systemd
+unit. This means there is no `useradd`/`userdel`/per-customer
+`systemctl` call anywhere in this profile, and therefore no `sudo` call
+in `msp_console/actions.py` either -- every action the console performs
+runs directly as its own account, which already owns every customer's
+files.
 
 The `bin/msp-*.sh` CLI scripts remain fully functional and are what the
-console itself calls under the hood -- use them directly for
+console itself calls under the hood for customer lifecycle
+(provision/deprovision) and renewal -- use them directly for
 scripting/automation/cron use where a web session isn't appropriate:
 
 ```bash
-# Onboard a new customer -- creates its dedicated system account,
-# directory tree, and starter config; enables + starts its systemd
-# instances; prints the nginx server block to add.
+# Onboard a new customer -- creates its directory tree and starter
+# config. No Linux account, systemd unit, or nginx routing involved.
 sudo /opt/acme-appliance/bin/msp-provision-customer.sh customer-a
 
-# Fleet-wide health at a glance (cert expiry, web UI/renewal-timer
-# state) -- reads everything directly off disk/systemd, independent of
-# whether any customer's web UI process happens to be up.
-sudo /opt/acme-appliance/bin/msp-fleet-status.sh
-sudo /opt/acme-appliance/bin/msp-fleet-status.sh --errors-only
+# Renew every domain for every customer (what acme-msp-renewal.timer
+# runs daily) -- or just one customer:
+sudo /opt/acme-appliance/bin/msp-renew-all-customers.sh
+sudo /opt/acme-appliance/bin/msp-renew-all-customers.sh customer-a
 
-# Offboard a customer -- stops/disables its units, archives (never
-# deletes outright) its config/certs to a dated tarball, removes its
-# system account.
+# Offboard a customer -- archives (never deletes outright) its
+# config/certs to a dated tarball, removes its directory tree.
 sudo /opt/acme-appliance/bin/msp-deprovision-customer.sh customer-a
 ```
 
-Each customer instance binds a **unix socket only**
-(`/run/acme-appliance/<slug>/webui.sock`) -- there is no directly
-reachable TCP listener per customer. Route to it with nginx (or Caddy)
-using `deploy/nginx/acme-appliance-msp.conf.template` as a starting
-point; `msp-provision-customer.sh` prints a filled-in copy of this
-template for each new customer.
-
-Updating the shared code across the whole fleet is a single `git pull` +
-restart, since every customer instance shares one code install:
+Updating the shared code is a single `git pull` + restart, since every
+customer's data is served by this one process:
 
 ```bash
 cd /opt/acme-appliance && git pull
-sudo systemctl restart 'acme-webui@*.service'
+sudo systemctl restart acme-msp-console.service
 ```
 
 ## Adding a new DNS provider
@@ -406,8 +411,8 @@ sudo systemctl restart 'acme-webui@*.service'
 1. Create `dns_providers/<name>.py` implementing `add_txt_record` / `remove_txt_record` from `base.py`.
 2. Register it in `dns_providers/__init__.py`'s `PROVIDER_TYPES` and `PROVIDER_FIELDS`.
 3. Restart the web UI: `systemctl restart acme-webui.service` (single-instance)
-   or `systemctl restart 'acme-webui@*.service'` (msp-panos, restarts every
-   customer instance at once since they all share this one code install).
+   or `systemctl restart acme-msp-console.service` (msp-panos -- restarts
+   the one shared process, picking up the change for every customer at once).
 
 ## Adding a new deploy target type
 

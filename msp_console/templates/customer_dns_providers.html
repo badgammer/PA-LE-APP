@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}{{ slug }} -- DNS Providers{% endblock %}
+{% block content %}
+<h1>{{ slug }}: DNS Providers</h1>
+<p class="subtitle">Named instances used for this customer's ACME DNS-01 challenge record creation.</p>
+{% if grant == "write" %}
+<p><a class="btn" href="{{ url_for('customer_dns_provider_new', slug=slug) }}">+ Add DNS provider</a></p>
+{% endif %}
+<table>
+  <thead><tr><th>Name</th><th>Type</th><th>Key settings</th><th></th></tr></thead>
+  <tbody>
+  {% for name, cfg in providers.items() %}
+    <tr>
+      <td class="mono">{{ name }}</td>
+      <td><span class="badge">{{ provider_labels.get(cfg.type, cfg.type) }}</span></td>
+      <td>
+        {% for k, v in cfg.settings.items() %}
+          {% if k in ["api_token", "sp_client_secret", "aws_secret_access_key", "auth_header"] %}
+            <div class="muted">{{ k }}: {{ mask(v) }}</div>
+          {% elif k not in ["propagation_seconds"] %}
+            <div class="muted">{{ k }}: {{ v }}</div>
+          {% endif %}
+        {% endfor %}
+      </td>
+      <td class="actions">
+        {% if grant == "write" %}
+        <form class="inline" method="post" action="{{ url_for('customer_dns_provider_test', slug=slug, instance_name=name) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="btn btn-secondary btn-small">Test connection</button>
+        </form>
+        <a href="{{ url_for('customer_dns_provider_edit', slug=slug, instance_name=name) }}" class="btn btn-secondary btn-small">Edit</a>
+        <form class="inline" method="post" action="{{ url_for('customer_dns_provider_delete', slug=slug, instance_name=name) }}" onsubmit="return confirm('Delete DNS provider {{ name }}?');">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="btn btn-danger btn-small">Delete</button>
+        </form>
+        {% else %}
+        <span class="muted">read-only</span>
+        {% endif %}
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="4" class="muted">No DNS providers configured yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

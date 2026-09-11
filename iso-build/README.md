@@ -49,24 +49,23 @@ each profile changes.
 4. Visit **System** to check for updates.
 
 **msp-panos profile:**
-1. Browse to `https://<appliance-ip>:9443/` -- the **MSP Console**
-   dashboard -- and create the initial owner account. This is the
-   primary way to onboard/offboard customers and monitor the fleet; see
-   the main README's "Running the msp-panos profile" section for the
-   full walkthrough, including how to add other MSP staff accounts with
-   scoped per-customer read/write access.
-2. Install nginx if it isn't already present (each CUSTOMER instance
-   binds a unix socket only -- there is no direct TCP listener to browse
-   to until nginx is routing to it; the MSP Console itself, unlike
-   customer instances, does listen directly on 9443/tcp).
-3. Onboard your first customer from the MSP Console, or from the CLI:
-   `sudo bin/msp-provision-customer.sh <slug>`.
-4. Add the printed nginx server block, reload nginx, then browse to that
-   customer's URL and create its admin account.
-5. Repeat per customer. Use the MSP Console dashboard or
-   `bin/msp-fleet-status.sh` for a cross-customer
-   health view at any time. There is no System page on this profile --
-   see the main README's gotcha #9 for why.
+1. Browse to `https://<appliance-ip>:9443/` -- the **MSP Console**, the
+   ONE web UI for this profile -- and create the initial owner account.
+   Only MSP staff ever log in here; customers never get their own login
+   or URL. See the main README's "Running the msp-panos profile"
+   section for the full walkthrough, including how to add other MSP
+   staff accounts with scoped per-customer read/write access.
+2. Onboard your first customer from the console's "+ Add customer"
+   button, or from the CLI: `sudo bin/msp-provision-customer.sh <slug>`.
+   This just creates that customer's own config directory and certbot
+   state -- no Linux account, systemd unit, or nginx routing involved.
+3. From that customer's detail page in the console, add its DNS
+   provider(s), deploy target(s), and domain(s) -- the exact same
+   workflow the single-instance profile's web UI has always used, just
+   scoped under `/customers/<slug>/...`.
+4. Repeat per customer. Everything is managed from this one console;
+   there is no System page on this profile -- see the main README's
+   gotcha #9 for why.
 
 ## Known gotchas already fixed in this codebase
 
@@ -96,15 +95,19 @@ each profile changes.
   README and `config/appliance.yaml.example` for details.
 - **One codebase, two install profiles**: `install.sh` (not a forked
   repo) chooses between `single-instance` (this page's default flow)
-  and `msp-panos` (multi-tenant, one systemd instance per customer,
-  PAN-OS only, System Updates disabled) -- see the main README's
-  "Install profiles" section.
+  and `msp-panos` (multi-tenant MSP mode, PAN-OS only, System Updates
+  disabled) -- see the main README's "Install profiles" section.
 - **System Updates is single-host by design**: it's fully unavailable
-  under the msp-panos profile (both the web routes and the sudoers rule
-  that would back them), not just hidden from the nav bar -- see the
-  main README's gotcha #9.
-- **MSP Console fleet dashboard**: msp-panos hosts get a separate
-  fleet-management web UI at `https://<host>:9443/` (own admin
-  database, own unprivileged service account, own narrowly-scoped
-  sudoers rule) -- see the main README's "Running the msp-panos
-  profile" section for the owner/staff permission model.
+  under the msp-panos profile (the web routes 404 outright), not just
+  hidden from the nav bar -- see the main README's gotcha #9.
+- **MSP Console**: msp-panos hosts run ONE shared web UI at
+  `https://<host>:9443/` (own admin database, own unprivileged service
+  account) for MSP staff only -- customers are data namespaces managed
+  through it, never separate logins -- see the main README's "Running
+  the msp-panos profile" section for the owner/staff permission model.
+- **No per-customer Linux accounts or `sudo`**: an earlier design ran
+  one dedicated account + systemd instance per customer and needed
+  `sudo` for every lifecycle action, which hit a real, reproducible
+  `ProtectSystem=strict`/`ReadWritePaths=` bug (see the main README's
+  gotcha #12). The current design has no per-customer account/unit at
+  all, so there is nothing left that needs root escalation.

@@ -17,11 +17,13 @@
 #     unconditionally disabled under msp-panos, since it operates on the
 #     shared HOST via a sudoers rule tied to a single fixed service
 #     account, which has no safe per-tenant equivalent
-#   - which systemd units get installed (static single-tenant units vs.
-#     templated %i multi-tenant units) and which identity model backs
-#     them (one shared service account vs. one system account per
-#     customer instance)
-#   - whether the MSP fleet helper scripts/nginx scaffolding get staged
+#   - which systemd units get installed: static single-tenant units
+#     (single-instance) vs. the MSP Console's own units (msp-panos) --
+#     under msp-panos there is only ONE process for the entire fleet
+#     (see systemd/msp-console/), never one unit/account per customer;
+#     customers are purely DATA namespaces under that one account
+#   - whether the MSP Console and its helper scripts (bin/msp-*.sh) get
+#     staged and started
 #
 # Usage:
 #   sudo ./install.sh                          # interactive prompt
@@ -57,17 +59,23 @@ Profiles:
                     existing single-tenant setup this appliance has
                     always used.
 
-  msp-panos         Multi-tenant. One systemd instance per customer,
-                    each running as its OWN dedicated system account,
-                    sharing one host and one code install. PAN-OS deploy
-                    targets ONLY -- pywinrm is never installed and the
-                    iis deploy provider type is never even importable on
-                    this profile, not just hidden in the UI. The System
-                    Updates feature is disabled entirely (it operates on
-                    the shared host, which has no safe per-tenant model).
-                    Templated systemd units (acme-webui@<slug>.service,
-                    etc.) plus the customer provisioning/fleet-status
-                    helper scripts under bin/msp-*.sh.
+  msp-panos         Multi-tenant MSP mode. ONE process (the MSP Console)
+                    for the entire fleet, running as a single dedicated
+                    "acme-msp-console" service account -- each customer
+                    is a DATA namespace (its own appliance.yaml, own
+                    certbot --config-dir for correctly isolated Let's
+                    Encrypt rate-limit accounting), not a separate
+                    account or systemd unit. Customers never log in
+                    themselves; only MSP staff log into the console,
+                    which has its own owner/staff permission model
+                    scoping which customers each admin can read/write.
+                    PAN-OS deploy targets ONLY -- pywinrm is never
+                    installed and the iis deploy provider type is never
+                    even importable on this profile. The System Updates
+                    feature is disabled entirely (it operates on the
+                    shared host, which has no safe per-tenant model).
+                    See systemd/msp-console/*.service and
+                    bin/msp-*.sh.
 EOF
 }
 

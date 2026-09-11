@@ -5,13 +5,12 @@
 <div class="card">
   <form method="post">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <label for="slug">Customer slug (lowercase letters/digits/hyphens only, 23 characters or fewer)</label>
-    <input type="text" id="slug" name="slug" pattern="[a-z0-9][a-z0-9-]*[a-z0-9]?" maxlength="23" required autofocus>
+    <label for="slug">Customer slug (lowercase letters/digits/hyphens only, 40 characters or fewer)</label>
+    <input type="text" id="slug" name="slug" pattern="[a-z0-9][a-z0-9-]*[a-z0-9]?" maxlength="40" required autofocus>
     <p class="helptext">
-      This becomes the systemd instance name (<code>acme-webui@&lt;slug&gt;.service</code>), the
-      directory name under <code>/etc/acme-appliance/customers/</code>, and part of the customer's
-      dedicated system account name (<code>acmecust-&lt;slug&gt;</code>). Choose something short and
-      stable -- it's not easily renamed later.
+      This becomes the directory name under <code>/etc/acme-appliance/customers/</code> for this
+      customer's own appliance.yaml and certbot state. Choose something short and stable -- it's
+      not easily renamed later.
     </p>
     <div class="form-actions">
       <button type="submit" class="btn">Provision customer</button>
@@ -22,13 +21,9 @@
 <script>
 // Guards against a double-click (or an impatient re-click while the
 // request is still in flight) sending two overlapping provisioning
-// requests -- useradd/userdel serialize on a shared, OS-wide account
-// database lock, so two near-simultaneous provisioning attempts can
-// otherwise produce a confusing, purely-timing-dependent
-// "cannot lock /etc/passwd; try again later" error even though the
-// underlying scripts now also protect themselves with their own lock
-// (see bin/msp-provision-customer.sh) -- this stops the redundant
-// second request from ever being sent in the first place.
+// requests for the SAME slug -- bin/msp-provision-customer.sh already
+// protects itself with its own flock, but this avoids sending the
+// redundant second request in the first place.
 document.querySelector('form').addEventListener('submit', function () {
   var btn = this.querySelector('button[type="submit"]');
   if (btn.disabled) { return; }

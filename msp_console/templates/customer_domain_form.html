@@ -1,0 +1,368 @@
+{% extends "base.html" %}
+{% block title %}{{ "Edit" if mode == "edit" else "Add" }} Domain -- {{ slug }}{% endblock %}
+{% block content %}
+<h1>{{ slug }}: {{ "Edit" if mode == "edit" else "Add" }} domain</h1>
+
+{% if mode == "edit" %}
+<div class="card">
+  <h2 style="margin-top:0;">Renewal actions</h2>
+  <p class="helptext">Runs certbot for just this domain in the background. "Renew now" is a no-op unless the certificate is inside its 30-day renewal window; "Force renew" ignores that window and always issues a new certificate.</p>
+  <form class="inline" method="post" action="{{ url_for('customer_domain_renew', slug=slug, name=entry.name) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit" class="btn btn-secondary">Renew now</button>
+  </form>
+  <form class="inline" method="post" action="{{ url_for('customer_domain_renew', slug=slug, name=entry.name) }}"
+        onsubmit="return confirm('Force-renew {{ entry.name }} now, ignoring the normal 30-day window?');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="force" value="on">
+    <button type="submit" class="btn btn-secondary">Force renew now</button>
+  </form>
+
+  {% if has_cert %}
+    <h2>Redeploy existing certificate</h2>
+    <p class="helptext">
+      Re-imports the certificate that's <strong>already issued and on disk</strong> to this
+      domain's configured deploy target(s) and commits -- without requesting a new
+      certificate from Let's Encrypt at all. Use this after fixing a deploy-target-side issue
+      instead of "Force renew now", since it doesn't touch your Let's Encrypt rate-limit headroom.
+    </p>
+    {% if redeploy_in_progress %}
+      <span class="badge" style="border-color:#d8a531;color:#d8a531;">Redeploying&hellip;</span>
+    {% else %}
+      <form method="post" action="{{ url_for('customer_domain_redeploy', slug=slug, name=entry.name) }}"
+            onsubmit="return confirm('Redeploy the existing certificate for {{ entry.name }} to its deploy target(s)? This re-imports it and commits -- no new certificate is issued.');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="btn btn-secondary">Redeploy</button>
+      </form>
+    {% endif %}
+  {% endif %}
+
+  <p style="margin-top:10px;"><a href="{{ url_for('customer_detail', slug=slug) }}">Back to {{ slug }} overview &rarr;</a></p>
+</div>
+{% endif %}
+
+{% if not providers %}
+  <div class="flash flash-error">No DNS providers configured yet for {{ slug }}. <a href="{{ url_for('customer_dns_provider_new', slug=slug) }}">Add one first</a>.</div>
+{% elif not deploy_providers %}
+  <div class="flash flash-error">No deploy targets configured yet for {{ slug }}. <a href="{{ url_for('customer_deploy_provider_new', slug=slug) }}">Add one first</a>.</div>
+{% else %}
+<div class="card">
+  <form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    <label for="name">Domain / FQDN (e.g. vpn.example.com, or *.example.com for a wildcard)</label>
+    <input type="text" id="name" name="name" required
+           value="{{ entry.name if entry else '' }}"
+           {% if mode == 'edit' %}readonly{% endif %}>
+    <p class="helptext">Wildcards are supported -- use e.g. "*.example.com".</p>
+
+    <label for="dns_provider">Primary DNS provider (used for the ACME DNS-01 challenge)</label>
+    <select id="dns_provider" name="dns_provider" required onchange="refreshOverrideDefaultLabels()">
+      {% for pname, pcfg in providers.items() %}
+        <option value="{{ pname }}" {% if entry and entry.dns_provider == pname %}selected{% endif %}>
+          {{ pname }} ({{ pcfg.type }})
+        </option>
+      {% endfor %}
+    </select>
+    <p class="helptext">Used for the domain name above, and for every additional name below unless you override it.</p>
+
+    <label for="cert_name_prefix">Certificate name prefix on the deploy target</label>
+    <input type="text" id="cert_name_prefix" name="cert_name_prefix"
+           value="{{ entry.cert_name_prefix if entry else 'gp-portal-cert' }}">
+    <p class="helptext">Each renewal creates a new cert object named "&lt;prefix&gt;-&lt;timestamp&gt;" rather than overwriting in place.</p>
+
+    <h2>Additional names (SANs)</h2>
+    <p class="helptext">
+      Extra names issued as part of the SAME certificate as the domain above -- e.g. pairing a
+      wildcard with its bare apex domain ("*.example.com" + "example.com"). Each name normally
+      uses the Primary DNS provider selected above, but you can override that per-name if a
+      given name lives in a <strong>different DNS zone or account</strong> -- as long as that
+      zone's provider is also configured under <a href="{{ url_for('customer_dns_providers_list', slug=slug) }}">DNS Providers</a>,
+      a single certificate can span multiple zones this way.
+    </p>
+
+    <div id="additional-name-rows">
+      {% for an in additional_names_for_form %}
+      <div class="additional-name-row">
+        <div>
+          <label>Name</label>
+          <input type="text" name="additional_name[]" value="{{ an.name }}" placeholder="e.g. example.com">
+        </div>
+        <div>
+          <label>DNS provider</label>
+          <select name="additional_name_provider[]">
+            <option value="" {% if not an.provider_override %}selected{% endif %}>(same as primary)</option>
+            {% for pname in providers.keys() %}
+              <option value="{{ pname }}" {% if an.provider_override == pname %}selected{% endif %}>{{ pname }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <button type="button" class="btn btn-secondary btn-small" onclick="this.closest('.additional-name-row').remove()">Remove</button>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <button type="button" class="btn btn-secondary btn-small" onclick="addAdditionalNameRow()">+ Add another name</button>
+
+    <h2>Deploy targets</h2>
+    <p class="helptext">
+      Where to deploy this certificate -- add one row per target instance (see
+      <a href="{{ url_for('customer_deploy_providers_list', slug=slug) }}">Deploy Targets</a>), mixing types freely
+      (e.g. the same certificate deployed to a PAN-OS firewall AND an IIS server). Each row's
+      fields change automatically based on the selected instance's type. Use "Fetch options"
+      where available to pull existing values (SSL/TLS profiles, IIS site names, etc.) from that
+      target instead of typing them by hand.
+    </p>
+
+    {% if not deploy_providers %}
+      <div class="flash flash-error">No deploy targets configured yet. <a href="{{ url_for('customer_deploy_provider_new', slug=slug) }}">Add one first</a>.</div>
+    {% else %}
+      <div id="target-rows"></div>
+      <button type="button" class="btn btn-secondary btn-small" onclick="addTargetRow(null)">+ Add another deploy target</button>
+    {% endif %}
+
+    <div class="form-actions">
+      <button type="submit" class="btn">{{ "Save changes" if mode == "edit" else "Add domain" }}</button>
+      <a href="{{ url_for('customer_domains_list', slug=slug) }}" class="btn btn-secondary">Cancel</a>
+    </div>
+  </form>
+</div>
+
+<template id="additional-name-row-template">
+  <div class="additional-name-row">
+    <div>
+      <label>Name</label>
+      <input type="text" name="additional_name[]" placeholder="e.g. example.com">
+    </div>
+    <div>
+      <label>DNS provider</label>
+      <select name="additional_name_provider[]">
+        <option value="" selected>(same as primary)</option>
+        {% for pname in providers.keys() %}
+          <option value="{{ pname }}">{{ pname }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <button type="button" class="btn btn-secondary btn-small" onclick="this.closest('.additional-name-row').remove()">Remove</button>
+    </div>
+  </div>
+</template>
+
+<script>
+function addAdditionalNameRow() {
+  const tpl = document.getElementById('additional-name-row-template');
+  const clone = tpl.content.cloneNode(true);
+  document.getElementById('additional-name-rows').appendChild(clone);
+}
+
+function refreshOverrideDefaultLabels() {
+  // purely cosmetic -- no-op placeholder in case we later want to show
+  // the currently-selected primary provider's name inline in each
+  // "(same as primary)" option; left as a hook for now.
+}
+
+// ---------------------------------------------------------------------
+// Deploy targets: a single generic UI that supports ANY deploy target
+// TYPE (panos, iis, and whatever gets added to deploy_providers/ next)
+// without hardcoding a fixed set of fields -- each row's visible
+// sub-fields are built from deploy_providers.TARGET_FIELDS (passed in
+// below as TARGET_FIELDS_SCHEMA) based on whichever instance is picked
+// in that row's dropdown, and serialized into a JSON blob (target_config[])
+// right before the form submits. See domain_logic.domain_from_form()
+// for the matching server-side parsing (shared with the single-instance
+// profile's own domain form).
+{% set instance_types = {} %}
+{% for iname, inst in deploy_providers.items() %}{% set _ = instance_types.update({iname: inst.type}) %}{% endfor %}
+const DEPLOY_PROVIDER_TYPES = {{ instance_types|tojson }};
+const TARGET_FIELDS_SCHEMA = {{ target_fields_schema|tojson }};
+const EXISTING_TARGETS = {{ deploy_targets_for_form|tojson }};
+
+function buildFieldWrapper(field, value, instanceName) {
+  const wrap = document.createElement('div');
+  const label = document.createElement('label');
+  label.textContent = field.label + (field.required ? ' *' : '');
+  wrap.appendChild(label);
+
+  let input;
+  if (field.type === 'select') {
+    input = document.createElement('select');
+    (field.options || []).forEach(opt => {
+      const val = Array.isArray(opt) ? opt[0] : opt;
+      const lbl = Array.isArray(opt) ? opt[1] : opt;
+      const o = document.createElement('option');
+      o.value = val;
+      o.textContent = lbl;
+      if ((value !== undefined && value !== null && value === val) ||
+          (value === undefined && field.default === val)) {
+        o.selected = true;
+      }
+      input.appendChild(o);
+    });
+  } else {
+    input = document.createElement('input');
+    input.type = field.type === 'number' ? 'number' : 'text';
+    input.value = (value !== undefined && value !== null) ? value : (field.default !== undefined ? field.default : '');
+  }
+  input.dataset.fieldName = field.name;
+  input.className = 'target-field-input';
+  wrap.appendChild(input);
+
+  if (field.fetchable) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn btn-secondary btn-small';
+    btn.textContent = 'Fetch options';
+    const status = document.createElement('div');
+    status.className = 'profile-fetch-status';
+    btn.onclick = function () { fetchOptionsFor(instanceName, wrap, input, status); };
+    wrap.appendChild(btn);
+    wrap.appendChild(status);
+  }
+  return wrap;
+}
+
+function fetchOptionsFor(instanceName, fieldWrap, input, statusEl) {
+  if (!instanceName) {
+    statusEl.textContent = 'Select a deploy target instance first.';
+    statusEl.className = 'profile-fetch-status err';
+    return;
+  }
+  statusEl.textContent = 'Fetching options from ' + instanceName + '...';
+  statusEl.className = 'profile-fetch-status';
+
+  let url = '/customers/{{ slug }}/deploy-providers/' + encodeURIComponent(instanceName) + '/options';
+  const row = fieldWrap.closest('.deploy-target-row');
+  const vsysInput = row ? row.querySelector('.target-type-fields input[data-field-name="vsys"]') : null;
+  if (vsysInput && vsysInput.value.trim()) {
+    url += '?vsys=' + encodeURIComponent(vsysInput.value.trim());
+  }
+
+  fetch(url)
+    .then(r => r.json())
+    .then(data => {
+      if (data.ok) {
+        let listId = input.getAttribute('list');
+        let datalist = listId ? document.getElementById(listId) : null;
+        if (!datalist) {
+          listId = 'opts-' + Math.random().toString(36).slice(2);
+          datalist = document.createElement('datalist');
+          datalist.id = listId;
+          input.setAttribute('list', listId);
+          fieldWrap.appendChild(datalist);
+        }
+        datalist.innerHTML = '';
+        data.options.forEach(o => {
+          const opt = document.createElement('option');
+          opt.value = o;
+          datalist.appendChild(opt);
+        });
+        if (data.options.length) {
+          statusEl.textContent = 'Found ' + data.options.length + ' option(s) -- start typing above to see suggestions.';
+          statusEl.className = 'profile-fetch-status ok';
+        } else {
+          statusEl.textContent = 'Connected, but no options were found on that target.';
+          statusEl.className = 'profile-fetch-status err';
+        }
+      } else {
+        statusEl.textContent = 'Could not fetch options: ' + data.error;
+        statusEl.className = 'profile-fetch-status err';
+      }
+    })
+    .catch(err => {
+      statusEl.textContent = 'Request failed: ' + err;
+      statusEl.className = 'profile-fetch-status err';
+    });
+}
+
+function renderTargetFields(row, prefill) {
+  const select = row.querySelector('select[name="target_instance[]"]');
+  const container = row.querySelector('.target-type-fields');
+  container.innerHTML = '';
+  const instanceName = select.value;
+  const type = DEPLOY_PROVIDER_TYPES[instanceName];
+  const schema = type ? TARGET_FIELDS_SCHEMA[type] : null;
+  if (!schema) {
+    const p = document.createElement('p');
+    p.className = 'helptext';
+    p.textContent = 'Select a deploy target instance above to configure it.';
+    container.appendChild(p);
+    return;
+  }
+  schema.fields.forEach(field => {
+    const value = prefill && (field.name in prefill) ? prefill[field.name] : undefined;
+    container.appendChild(buildFieldWrapper(field, value, instanceName));
+  });
+}
+
+function addTargetRow(existing) {
+  const row = document.createElement('div');
+  row.className = 'deploy-target-row';
+
+  const instDiv = document.createElement('div');
+  const instLabel = document.createElement('label');
+  instLabel.textContent = 'Deploy target instance';
+  instDiv.appendChild(instLabel);
+  const select = document.createElement('select');
+  select.name = 'target_instance[]';
+  Object.keys(DEPLOY_PROVIDER_TYPES).forEach(name => {
+    const o = document.createElement('option');
+    o.value = name;
+    o.textContent = name + ' (' + DEPLOY_PROVIDER_TYPES[name] + ')';
+    select.appendChild(o);
+  });
+  instDiv.appendChild(select);
+  row.appendChild(instDiv);
+
+  const fieldsDiv = document.createElement('div');
+  fieldsDiv.className = 'target-type-fields';
+  row.appendChild(fieldsDiv);
+
+  const hidden = document.createElement('input');
+  hidden.type = 'hidden';
+  hidden.name = 'target_config[]';
+  row.appendChild(hidden);
+
+  const removeDiv = document.createElement('div');
+  const removeBtn = document.createElement('button');
+  removeBtn.type = 'button';
+  removeBtn.className = 'btn btn-secondary btn-small';
+  removeBtn.textContent = 'Remove';
+  removeBtn.onclick = function () { row.remove(); };
+  removeDiv.appendChild(removeBtn);
+  row.appendChild(removeDiv);
+
+  document.getElementById('target-rows').appendChild(row);
+
+  if (existing && existing.target) {
+    select.value = existing.target;
+  }
+  select.addEventListener('change', () => renderTargetFields(row, null));
+  renderTargetFields(row, existing || null);
+}
+
+function serializeTargetRowsBeforeSubmit() {
+  document.querySelectorAll('#target-rows .deploy-target-row').forEach(row => {
+    const config = {};
+    row.querySelectorAll('.target-type-fields .target-field-input').forEach(input => {
+      config[input.dataset.fieldName] = input.value;
+    });
+    row.querySelector('input[name="target_config[]"]').value = JSON.stringify(config);
+  });
+}
+
+{% if deploy_providers %}
+const domainForm = document.getElementById('target-rows').closest('form');
+domainForm.addEventListener('submit', serializeTargetRowsBeforeSubmit);
+
+if (EXISTING_TARGETS.length) {
+  EXISTING_TARGETS.forEach(t => addTargetRow(t));
+} else {
+  addTargetRow(null);
+}
+{% endif %}
+</script>
+{% endif %}
+{% endblock %}

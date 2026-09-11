@@ -4,43 +4,60 @@
 <h1>{{ status.slug }}</h1>
 <p class="subtitle">Your access level here: <span class="badge">{{ grant }}</span></p>
 
+<nav class="subnav">
+  <a href="{{ url_for('customer_detail', slug=status.slug) }}" class="active">Overview</a>
+  <a href="{{ url_for('customer_domains_list', slug=status.slug) }}">Domains</a>
+  <a href="{{ url_for('customer_dns_providers_list', slug=status.slug) }}">DNS Providers</a>
+  <a href="{{ url_for('customer_deploy_providers_list', slug=status.slug) }}">Deploy Targets</a>
+  <a href="{{ url_for('customer_settings', slug=status.slug) }}">Settings</a>
+</nav>
+
 <div class="grid-3">
   <div class="card">
-    <div class="stat-value"><span class="badge {{ 'badge-ok' if status.webui_state == 'up' else 'badge-err' }}">{{ status.webui_state }}</span></div>
-    <div class="stat-label">Web UI</div>
-  </div>
-  <div class="card">
-    <div class="stat-value"><span class="badge {{ 'badge-ok' if status.renew_state == 'enabled' else 'badge-warn' }}">{{ status.renew_state }}</span></div>
-    <div class="stat-label">Renewal timer</div>
+    <div class="stat-value">{{ status.domain_count }}</div>
+    <div class="stat-label">Configured domains</div>
   </div>
   <div class="card">
     <div class="stat-value">{{ status.cert_expiry or "not yet issued" }}</div>
     <div class="stat-label">Soonest certificate expiry</div>
   </div>
+  <div class="card">
+    <div class="stat-value">
+      {% if status.renewing %}
+        <span class="badge badge-warn">Renewing&hellip;</span>
+      {% else %}
+        <span class="badge badge-ok">Idle</span>
+      {% endif %}
+    </div>
+    <div class="stat-label">Renewal state</div>
+  </div>
 </div>
+
+{% if status.note %}
+<div class="flash flash-error">{{ status.note }}</div>
+{% endif %}
 
 {% if grant == "write" %}
 <div class="card">
   <h2 style="margin-top:0;">Actions</h2>
   <form class="inline" method="post" action="{{ url_for('customer_renew', slug=status.slug) }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <button type="submit" class="btn btn-secondary">Trigger renewal check</button>
+    <button type="submit" class="btn btn-secondary">Trigger renewal check for all domains</button>
   </form>
-  <form class="inline" method="post" action="{{ url_for('customer_restart', slug=status.slug) }}"
-        onsubmit="return confirm('Restart the web UI for {{ status.slug }}? This will briefly interrupt anyone using it.');">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <button type="submit" class="btn btn-secondary">Restart web UI</button>
-  </form>
-  <p class="helptext">Renewal runs in the background -- refresh the log below after a minute or two to check progress.</p>
+  <p class="helptext">
+    Runs certbot for every domain configured for this customer in the background -- refresh
+    the log below after a minute or two to check progress. To renew or redeploy just ONE
+    domain, use that domain's own buttons under
+    <a href="{{ url_for('customer_domains_list', slug=status.slug) }}">Domains</a> instead.
+  </p>
 </div>
 
 <div class="card danger-zone">
   <h2>Deprovision this customer</h2>
   <p class="helptext">
-    Stops and disables this customer's services, archives its config/certs/keys to a dated
-    tarball on the host (nothing is deleted outright), and removes its dedicated system account.
-    This cannot be undone from this dashboard -- recovering requires manual access to the archive
-    on the host.
+    Archives this customer's config/certs/keys to a dated tarball on the host (nothing is
+    deleted outright) and removes its directory tree. This cannot be undone from this
+    dashboard -- recovering requires manual access to the archive on the host.
   </p>
   <form method="post" action="{{ url_for('customer_deprovision', slug=status.slug) }}"
         onsubmit="return confirmDeprovision(this, '{{ status.slug }}');">
@@ -52,13 +69,12 @@
     </div>
   </form>
   <script>
-  // Same double-submit concern as the "Add customer" form (see
-  // customer_new.html) -- userdel shares the same OS-wide account
-  // database lock useradd does, so this is disabled only AFTER the
-  // confirm() dialog is accepted, never before (canceling the confirm
-  // must leave the button clickable again, not stuck disabled).
+  // Guards against a double-click sending two overlapping deprovision
+  // requests -- disabled only AFTER the confirm() dialog is accepted,
+  // never before (canceling the confirm must leave the button
+  // clickable again, not stuck disabled).
   function confirmDeprovision(form, slug) {
-    if (!confirm('This will stop and archive ' + slug + '. Are you absolutely sure?')) {
+    if (!confirm('This will archive and remove ' + slug + '. Are you absolutely sure?')) {
       return false;
     }
     var btn = form.querySelector('button[type="submit"]');

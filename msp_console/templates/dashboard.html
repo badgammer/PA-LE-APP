@@ -26,13 +26,12 @@
 <div class="card">
   <h2 style="margin-top:0;">Needs attention</h2>
   <table>
-    <thead><tr><th>Customer</th><th>Web UI</th><th>Renewal timer</th><th>Cert expiry</th><th>Note</th><th></th></tr></thead>
+    <thead><tr><th>Customer</th><th>Domains</th><th>Cert expiry</th><th>Note</th><th></th></tr></thead>
     <tbody>
     {% for s in unhealthy %}
       <tr>
         <td class="mono">{{ s.slug }}</td>
-        <td><span class="badge {{ 'badge-ok' if s.webui_state == 'up' else 'badge-err' }}">{{ s.webui_state }}</span></td>
-        <td><span class="badge {{ 'badge-ok' if s.renew_state == 'enabled' else 'badge-warn' }}">{{ s.renew_state }}</span></td>
+        <td>{{ s.domain_count }}</td>
         <td>{{ s.cert_expiry or "not yet issued" }}</td>
         <td><span class="badge badge-warn">{{ s.note }}</span></td>
         <td><a href="{{ url_for('customer_detail', slug=s.slug) }}" class="btn btn-secondary btn-small">View</a></td>
@@ -46,7 +45,7 @@
 {% if current_user_is_owner %}
 <div class="card">
   <h2 style="margin-top:0;">Onboard a new customer</h2>
-  <p class="helptext">Creates the customer's dedicated system account, directory tree, and starter config; enables and starts its systemd instances.</p>
+  <p class="helptext">Creates the customer's directory tree and starter config -- no separate login or nginx routing needed; every customer is managed from this same console.</p>
   <a href="{{ url_for('customer_new') }}" class="btn">+ Add customer</a>
 </div>
 {% endif %}

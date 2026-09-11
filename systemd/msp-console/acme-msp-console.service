@@ -1,5 +1,5 @@
 [Unit]
-Description=ACME Appliance MSP Console -- fleet dashboard
+Description=ACME Appliance MSP Console -- fleet dashboard and customer management (msp-panos profile)
 Wants=network-online.target
 After=network-online.target
 
@@ -9,6 +9,7 @@ User=acme-msp-console
 Group=acme-msp-console
 WorkingDirectory=/opt/acme-appliance/msp_console
 
+Environment=ACME_APPLIANCE_PROFILE=msp-panos
 Environment=ACME_MSP_CONSOLE_ADMINS=/etc/acme-appliance/msp-console/admins.yaml
 Environment=ACME_MSP_CONSOLE_SECRET_KEY_FILE=/etc/acme-appliance/msp-console/secret_key
 Environment=ACME_MSP_CONSOLE_LOG=/var/log/acme-appliance/msp-console.log
@@ -25,69 +26,29 @@ ExecStart=/opt/acme-appliance/venv/bin/gunicorn \
 Restart=on-failure
 RestartSec=5
 
-# This account is DELIBERATELY unprivileged, exactly like the
-# single-instance profile's acme-webui.service account -- every action
-# that needs root (provisioning/deprovisioning customers, starting a
-# renewal, restarting a customer's web UI, reading a customer's log)
-# goes through the narrowly-scoped sudoers rule in
-# iso-build/sudoers.d/acme-msp-console, which permits ONLY a handful of
-# specific, pre-validated commands -- see msp_console/actions.py for the
-# Python side of that boundary.
+# ---------------------------------------------------------------------
+# ARCHITECTURE NOTE (clean redesign -- see CHANGES.md for the full
+# history): this profile used to run one dedicated Linux account +
+# systemd instance PER CUSTOMER, with the MSP Console itself needing to
+# `sudo` into per-customer useradd/userdel/systemctl operations to
+# manage them -- that model required a wide ReadWritePaths= grant
+# (including /etc itself, for useradd's own lock files) and forbade
+# NoNewPrivileges=true, since sudo is a setuid-root binary.
 #
-# IMPORTANT: NoNewPrivileges is intentionally NOT set to true here,
-# unlike some other units in this appliance. sudo is a setuid-root
-# binary -- NoNewPrivileges=true would silently prevent it from ever
-# gaining root, making EVERY action this console performs fail, not
-# just malicious ones (this is the exact same reasoning already
-# documented on the single-instance profile's acme-webui.service, which
-# needs the same exemption for its own, differently-scoped sudo use).
-# This is a deliberate, narrow trade-off: this service can ONLY escalate
-# via the specific, fixed commands listed in
-# iso-build/sudoers.d/acme-msp-console -- it still cannot run arbitrary
-# commands as root.
+# Under this redesign, there is exactly ONE process for the entire
+# fleet (this one), and every customer's config/certs/logs are just
+# DATA under this SAME account's own directories -- no separate Linux
+# account or systemd unit per customer, and therefore NO sudo call
+# anywhere in msp_console/actions.py anymore. This is a substantial,
+# genuine hardening improvement, not just a simplification: this unit
+# can now use BOTH ProtectSystem=strict (as before) AND
+# NoNewPrivileges=true (newly possible), and ReadWritePaths= only ever
+# needs to list the exact directories this account's own data actually
+# lives under -- never /etc as a whole.
+# ---------------------------------------------------------------------
 ProtectSystem=strict
-
-# --- CRITICAL FIX (previously missing) --------------------------------
-# ProtectSystem=strict bind-mounts the ENTIRE filesystem read-only for
-# this unit's process tree EXCEPT the paths listed in ReadWritePaths=
-# below -- and that restriction is enforced by the kernel at the mount
-# layer, which means it is NOT bypassed by privilege escalation. When
-# this service invokes `sudo /opt/acme-appliance/bin/msp-provision-
-# customer.sh <slug>`, sudo does NOT create a new mount namespace (it
-# only changes the process's UID/capabilities) -- so useradd, userdel,
-# `systemctl enable`, and every directory-creation step that script
-# performs ALL still run inside this SAME read-only-everywhere-but-
-# ReadWritePaths mount namespace, even though they are running as root.
-#
-# Previously, ONLY /etc/acme-appliance/msp-console and
-# /var/log/acme-appliance were listed here -- meaning useradd could
-# never write /etc/passwd, /etc/shadow, or their .lock files (producing
-# "cannot lock /etc/passwd; try again later" / "Read-only file system"
-# errors), and msp-provision-customer.sh could never create a
-# customer's own directories under /etc/acme-appliance/customers/<slug>,
-# /var/lib/acme-appliance/customers/<slug>, or
-# /run/acme-appliance/<slug>. This reproduced IDENTICALLY on every
-# host/VM/architecture tested, because it is a property of THIS unit
-# file, not of any particular disk, filesystem, or hardware -- no
-# amount of fsck, remounting, or provisioning on a brand-new VM could
-# ever have fixed it from outside this file.
-#
-# Granting /etc (and the appliance's own state directories) as
-# ReadWritePaths here does NOT hand this unprivileged service direct
-# write access to /etc/passwd -- ReadWritePaths only lifts the
-# MOUNT-level read-only restriction; normal Unix file permissions
-# (DAC) are still fully enforced on top of it. /etc/passwd and
-# /etc/shadow remain owned root:root with standard restrictive modes,
-# so the unprivileged acme-msp-console account still cannot write to
-# them directly -- only root (reached exclusively via the narrow,
-# audited sudoers rules in iso-build/sudoers.d/acme-msp-console) can.
-# ProtectSystem=strict is kept (rather than disabled outright) so this
-# service still cannot tamper with /usr, /boot, or other OS binaries
-# even after a hypothetical future privilege-escalation bug in its own
-# Python code.
-ReadWritePaths=/etc/acme-appliance/msp-console /etc/acme-appliance/customers /etc /var/log/acme-appliance /var/lib/acme-appliance /run/acme-appliance
-# ------------------------------------------------------------------------
-
+ReadWritePaths=/etc/acme-appliance/msp-console /etc/acme-appliance/customers /etc/acme-appliance/offboarded /var/log/acme-appliance /var/lib/acme-appliance /run/acme-appliance
+NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
 ProtectKernelTunables=true

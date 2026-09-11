@@ -8,7 +8,6 @@ export, ACME account settings, and OS update checking/applying.
 """
 
 import io
-import json
 import os
 import re
 import secrets
@@ -33,6 +32,7 @@ import system_updates  # noqa: E402
 from dns_providers import PROVIDER_FIELDS  # noqa: E402
 from deploy_providers import INSTANCE_FIELDS, TARGET_FIELDS  # noqa: E402
 from cert_naming import safe_cert_name  # noqa: E402
+import domain_logic  # noqa: E402
 
 APPLIANCE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -388,7 +388,7 @@ def domain_redeploy(name):
     cfg = store.load_config()
     if not store.get_domain(cfg, name):
         abort(404)
-    if not _cert_lineage_dir(name):
+    if not domain_logic.cert_lineage_dir(name, LETSENCRYPT_LIVE_DIR):
         flash(
             f"No certificate has been issued yet for '{name}' -- nothing to redeploy. "
             "Use 'Renew now' first.", "error",
@@ -433,94 +433,14 @@ def domains_list():
     for d in cfg["domains"]:
         rows.append({
             "entry": d,
-            "additional_names_display": _additional_names_display(d),
-            "deploy_targets_display": _deploy_targets_display(d, cfg["deploy_providers"]),
-            "cert_expiry": _cert_expiry(d["name"]),
+            "additional_names_display": domain_logic.additional_names_display(d),
+            "deploy_targets_display": domain_logic.deploy_targets_display(d, cfg["deploy_providers"]),
+            "cert_expiry": domain_logic.cert_expiry(d["name"], LETSENCRYPT_LIVE_DIR),
             "renewal_in_progress": _renewal_in_progress(d["name"]),
             "redeploy_in_progress": _redeploy_in_progress(d["name"]),
-            "has_cert": _cert_lineage_dir(d["name"]) is not None,
+            "has_cert": domain_logic.cert_lineage_dir(d["name"], LETSENCRYPT_LIVE_DIR) is not None,
         })
     return render_template("domains.html", rows=rows, any_renewal_in_progress=bool(_active_lock_labels()))
-
-
-def _target_summary(target_entry: dict, provider_type: str) -> str:
-    """
-    Human-readable one-liner for a single deploy_targets[] row, used on
-    the Domains list page -- each deploy target TYPE has its own
-    type-specific fields (see deploy_providers.TARGET_FIELDS), so this
-    knows how to summarize the ones this appliance ships with and falls
-    back to a generic dump of the entry for anything else.
-    """
-    if provider_type == "panos":
-        kind = "GlobalProtect portal" if target_entry.get("cert_field_type") == "globalprotect_portal" else "SSL/TLS profile"
-        vsys = f" (vsys={target_entry['vsys']})" if target_entry.get("vsys") else ""
-        return f"{kind}: {target_entry.get('cert_field_value', '')}{vsys}"
-    if provider_type == "iis":
-        ip = target_entry.get("binding_ip") or "*"
-        port = target_entry.get("binding_port") or 443
-        host = f", SNI={target_entry['hostname']}" if target_entry.get("hostname") else ""
-        return f"IIS site '{target_entry.get('site_name', '')}' ({ip}:{port}{host})"
-    return ", ".join(f"{k}={v}" for k, v in target_entry.items() if k != "target")
-
-
-def _deploy_targets_display(entry: dict, deploy_providers: dict) -> list:
-    result = []
-    for t in entry.get("deploy_targets", []) or []:
-        instance = deploy_providers.get(t.get("target"), {})
-        result.append({
-            "target": t.get("target"),
-            "type": instance.get("type", "unknown"),
-            "summary": _target_summary(t, instance.get("type", "")),
-        })
-    return result
-
-
-def _additional_names_display(entry: dict) -> list:
-    """
-    Returns [{"name": ..., "override": provider_name_or_empty}] for
-    display on the Domains list page -- override is non-empty only when
-    that specific name uses a DIFFERENT dns_provider than the entry's
-    own default (i.e. a genuine per-name override), so the UI can show
-    a small badge only where it's actually meaningful.
-    """
-    default_provider = entry.get("dns_provider")
-    result = []
-    for item in entry.get("additional_names", []) or []:
-        if isinstance(item, dict):
-            name = item["name"]
-            override = item.get("dns_provider") or ""
-            if override == default_provider:
-                override = ""
-        else:
-            name = item
-            override = ""
-        result.append({"name": name, "override": override})
-    return result
-
-
-def _cert_lineage_dir(domain_name: str):
-    for candidate in (safe_cert_name(domain_name), domain_name):
-        path = os.path.join(LETSENCRYPT_LIVE_DIR, candidate)
-        if os.path.isdir(path):
-            return path
-    return None
-
-
-def _cert_expiry(domain_name: str):
-    lineage_dir = _cert_lineage_dir(domain_name)
-    if not lineage_dir:
-        return None
-    cert_path = os.path.join(lineage_dir, "cert.pem")
-    if not os.path.exists(cert_path):
-        return None
-    try:
-        out = subprocess.check_output(
-            ["openssl", "x509", "-enddate", "-noout", "-in", cert_path],
-            stderr=subprocess.DEVNULL, timeout=5,
-        ).decode()
-        return out.strip().replace("notAfter=", "")
-    except Exception:  # noqa: BLE001
-        return None
 
 
 @app.route("/domains/<path:name>/download")
@@ -529,7 +449,7 @@ def domain_download(name):
     cfg = store.load_config()
     if not store.get_domain(cfg, name):
         abort(404)
-    lineage_dir = _cert_lineage_dir(name)
+    lineage_dir = domain_logic.cert_lineage_dir(name, LETSENCRYPT_LIVE_DIR)
     if not lineage_dir:
         flash(f"No certificate has been issued yet for '{name}'.", "error")
         return redirect(url_for("domains_list"))
@@ -559,7 +479,7 @@ def domain_new():
     cfg = store.load_config()
     if request.method == "POST":
         check_csrf()
-        name, entry, error = _domain_from_form(cfg)
+        name, entry, error = domain_logic.domain_from_form(cfg, request.form, TARGET_FIELDS)
         if error:
             flash(error, "error")
         elif store.get_domain(cfg, name):
@@ -586,7 +506,7 @@ def domain_edit(name):
         abort(404)
     if request.method == "POST":
         check_csrf()
-        new_name, new_entry, error = _domain_from_form(cfg)
+        new_name, new_entry, error = domain_logic.domain_from_form(cfg, request.form, TARGET_FIELDS)
         if error:
             flash(error, "error")
         else:
@@ -597,32 +517,13 @@ def domain_edit(name):
             return redirect(url_for("domains_list"))
     return render_template(
         "domain_form.html", mode="edit", entry=entry,
-        has_cert=_cert_lineage_dir(name) is not None,
+        has_cert=domain_logic.cert_lineage_dir(name, LETSENCRYPT_LIVE_DIR) is not None,
         redeploy_in_progress=_redeploy_in_progress(name),
-        additional_names_for_form=_additional_names_for_form(entry),
+        additional_names_for_form=domain_logic.additional_names_for_form(entry),
         deploy_targets_for_form=entry.get("deploy_targets", []),
         providers=cfg["dns_providers"], deploy_providers=cfg["deploy_providers"],
         target_fields_schema=TARGET_FIELDS,
     )
-
-
-def _additional_names_for_form(entry: dict) -> list:
-    """
-    Returns [{"name": ..., "provider_override": provider_or_empty}] for
-    populating the Edit Domain form's repeatable "Additional names"
-    rows. Unlike _additional_names_display (used on the Domains list),
-    this deliberately keeps provider_override EMPTY (not resolved to the
-    entry's default) whenever the stored entry didn't specify one, so
-    the form's dropdown correctly pre-selects "(same as primary)"
-    rather than appearing to explicitly re-select the default provider.
-    """
-    result = []
-    for item in entry.get("additional_names", []) or []:
-        if isinstance(item, dict):
-            result.append({"name": item["name"], "provider_override": item.get("dns_provider") or ""})
-        else:
-            result.append({"name": item, "provider_override": ""})
-    return result
 
 
 @app.route("/domains/<path:name>/delete", methods=["POST"])
@@ -634,84 +535,6 @@ def domain_delete(name):
     store.save_config(cfg)
     flash(f"Deleted domain {name}.", "success")
     return redirect(url_for("domains_list"))
-
-
-def _domain_from_form(cfg):
-    name = request.form.get("name", "").strip()
-    dns_provider = request.form.get("dns_provider", "").strip()
-    cert_name_prefix = request.form.get("cert_name_prefix", "").strip() or "gp-portal-cert"
-
-    if not name:
-        return None, None, "Domain name is required."
-    if dns_provider not in cfg["dns_providers"]:
-        return None, None, "Select a valid primary DNS provider."
-
-    # Additional names (SANs): each row is a name + an optional per-name
-    # DNS provider override. An override is only stored (as a {"name":
-    # ..., "dns_provider": ...} dict) when it differs from the entry's
-    # own primary dns_provider -- otherwise the name is stored as a
-    # plain string, keeping the YAML clean and fully backward-compatible
-    # with configs written before this feature existed.
-    additional_names = []
-    an_names = request.form.getlist("additional_name[]")
-    an_providers = request.form.getlist("additional_name_provider[]")
-    for an_name, an_provider in zip(an_names, an_providers):
-        an_name = an_name.strip()
-        if not an_name:
-            continue
-        if an_provider and an_provider != dns_provider:
-            if an_provider not in cfg["dns_providers"]:
-                return None, None, f"Unknown DNS provider override '{an_provider}' for additional name '{an_name}'."
-            additional_names.append({"name": an_name, "dns_provider": an_provider})
-        else:
-            additional_names.append(an_name)
-
-    # Deploy targets: each row is a reference to a named deploy_providers[]
-    # instance (any type -- PAN-OS firewall, IIS server, etc.) plus a JSON
-    # blob of that type's own fields (e.g. ssl_tls_profile/vsys for panos,
-    # site_name/binding_ip/binding_port/hostname for iis). The JSON blob is
-    # assembled client-side by domain_form.html's JS right before submit,
-    # from whichever type-specific subform is currently rendered for that
-    # row -- this lets ONE generic form support any number of deploy
-    # target types without a fixed set of parallel array fields per type.
-    deploy_targets = []
-    target_instances = request.form.getlist("target_instance[]")
-    target_configs = request.form.getlist("target_config[]")
-    for instance_name, config_json in zip(target_instances, target_configs):
-        if not instance_name:
-            continue
-        if instance_name not in cfg["deploy_providers"]:
-            return None, None, f"Unknown deploy target '{instance_name}' in target list."
-        try:
-            fields = json.loads(config_json) if config_json else {}
-            if not isinstance(fields, dict):
-                raise ValueError("not an object")
-        except (TypeError, ValueError):
-            return None, None, f"Invalid target configuration submitted for '{instance_name}'."
-        provider_type = cfg["deploy_providers"][instance_name]["type"]
-        schema = TARGET_FIELDS.get(provider_type, {"fields": []})
-        for field in schema["fields"]:
-            if field.get("required") and not fields.get(field["name"]):
-                return None, None, (
-                    f"'{field['label']}' is required for deploy target '{instance_name}' "
-                    f"({provider_type})."
-                )
-        target = {"target": instance_name}
-        target.update(fields)
-        deploy_targets.append(target)
-
-    if not deploy_targets:
-        return None, None, "At least one deploy target is required."
-
-    entry = {
-        "name": name,
-        "dns_provider": dns_provider,
-        "cert_name_prefix": cert_name_prefix,
-        "deploy_targets": deploy_targets,
-    }
-    if additional_names:
-        entry["additional_names"] = additional_names
-    return name, entry, None
 
 
 @app.route("/deploy-providers/<name>/options")
@@ -755,7 +578,7 @@ def dns_provider_new():
         elif instance_name in cfg["dns_providers"]:
             flash(f"A DNS provider named '{instance_name}' already exists.", "error")
         else:
-            settings = _settings_from_form(PROVIDER_FIELDS, provider_type, existing_settings={})
+            settings = domain_logic.settings_from_form(PROVIDER_FIELDS, provider_type, existing_settings={}, form=request.form)
             store.upsert_dns_provider(cfg, instance_name, provider_type, settings)
             store.save_config(cfg)
             flash(f"Added DNS provider '{instance_name}'.", "success")
@@ -778,7 +601,7 @@ def dns_provider_edit(instance_name):
     provider_type = instance["type"]
     if request.method == "POST":
         check_csrf()
-        settings = _settings_from_form(PROVIDER_FIELDS, provider_type, existing_settings=instance.get("settings", {}))
+        settings = domain_logic.settings_from_form(PROVIDER_FIELDS, provider_type, existing_settings=instance.get("settings", {}), form=request.form)
         store.upsert_dns_provider(cfg, instance_name, provider_type, settings)
         store.save_config(cfg)
         flash(f"Updated DNS provider '{instance_name}'.", "success")
@@ -823,30 +646,7 @@ def dns_provider_test(instance_name):
     return redirect(url_for("dns_providers_list"))
 
 
-def _settings_from_form(fields_schema: dict, provider_type: str, existing_settings: dict) -> dict:
-    """
-    Generic "read an instance's connection settings out of request.form"
-    helper -- used for BOTH dns_providers (fields_schema=PROVIDER_FIELDS)
-    and deploy_providers (fields_schema=INSTANCE_FIELDS) instance forms,
-    since both follow the exact same {label, name, type, secret, default,
-    required} field-schema shape.
-    """
-    settings = dict(existing_settings)
-    for field in fields_schema[provider_type]["fields"]:
-        fname = field["name"]
-        if field.get("type") == "checkbox":
-            settings[fname] = request.form.get(fname) == "on"
-            continue
-        value = request.form.get(fname, "")
-        if field.get("secret") and not value:
-            continue
-        if value == "" and "default" in field:
-            settings[fname] = field["default"]
-        elif field.get("type") == "number":
-            settings[fname] = int(value) if value else field.get("default", 0)
-        else:
-            settings[fname] = value
-    return settings
+
 
 
 @app.route("/deploy-providers")
@@ -874,7 +674,7 @@ def deploy_provider_new():
         elif instance_name in cfg["deploy_providers"]:
             flash(f"A deploy target named '{instance_name}' already exists.", "error")
         else:
-            settings = _settings_from_form(INSTANCE_FIELDS, provider_type, existing_settings={})
+            settings = domain_logic.settings_from_form(INSTANCE_FIELDS, provider_type, existing_settings={}, form=request.form)
             store.upsert_deploy_provider(cfg, instance_name, provider_type, settings)
             store.save_config(cfg)
             flash(f"Added deploy target '{instance_name}'.", "success")
@@ -897,7 +697,7 @@ def deploy_provider_edit(instance_name):
     provider_type = instance["type"]
     if request.method == "POST":
         check_csrf()
-        settings = _settings_from_form(INSTANCE_FIELDS, provider_type, existing_settings=instance.get("settings", {}))
+        settings = domain_logic.settings_from_form(INSTANCE_FIELDS, provider_type, existing_settings=instance.get("settings", {}), form=request.form)
         store.upsert_deploy_provider(cfg, instance_name, provider_type, settings)
         store.save_config(cfg)
         flash(f"Updated deploy target '{instance_name}'.", "success")

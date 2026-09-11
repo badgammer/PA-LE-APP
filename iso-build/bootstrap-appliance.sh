@@ -159,22 +159,22 @@ find "$SRC_DIR" -mindepth 1 -maxdepth 1 \
 # the running appliance and must be copied back in explicitly:
 #   - iso-build/'s own install.sh/lib/ re-copy below (install.sh runs
 #     FROM $INSTALL_DIR from this point on)
-#   - iso-build/sudoers.d/ -- BOTH install profile scripts
-#     (lib/profile-single-instance.sh for acme-appliance-updates, and
-#     lib/profile-msp-panos.sh for acme-msp-console) read their sudoers
-#     rule source file from $INSTALL_DIR/iso-build/sudoers.d/<name> at
-#     install time. Forgetting this copy means that lookup silently
-#     fails (a plain `[[ -f "$sudoers_src" ]]` check, not a hard error)
-#     and BOTH profiles' privileged-action sudoers rule never gets
-#     installed at all -- the affected service account
-#     (acme-appliance or acme-msp-console) ends up with ZERO sudo
-#     grants, and every privileged action it tries then fails
-#     identically with "sudo: a password is required". This is easy to
-#     miss in installer scrollback (it only prints a WARNING, doesn't
-#     abort) and only actually surfaces later when someone clicks a
-#     privileged action (Apply updates/Reboot on single-instance;
-#     restart web UI/tail log/provision/deprovision on msp-panos) in
-#     whichever UI is affected.
+#   - iso-build/sudoers.d/ -- lib/profile-single-instance.sh reads its
+#     acme-appliance-updates sudoers rule source file from
+#     $INSTALL_DIR/iso-build/sudoers.d/acme-appliance-updates at install
+#     time (for the single-instance profile's System Updates feature).
+#     Forgetting this copy means that lookup silently fails (a plain
+#     `[[ -f "$sudoers_src" ]]` check, not a hard error) and that
+#     sudoers rule never gets installed -- the acme-appliance service
+#     account ends up with ZERO sudo grants, and the Apply Updates/
+#     Reboot actions then fail with "sudo: a password is required".
+#     This is easy to miss in installer scrollback (it only prints a
+#     WARNING, doesn't abort). NOTE: the msp-panos profile no longer
+#     has ANY sudoers rule of its own -- its MSP Console needs no
+#     privilege escalation at all under the current (clean-redesign)
+#     architecture, see lib/profile-msp-panos.sh -- so this copy step
+#     is single-instance-specific now, but is still unconditional here
+#     since both profiles are installed FROM the same copied tree.
 cp -r "$SRC_DIR/install.sh" "$INSTALL_DIR/install.sh" 2>/dev/null || true
 cp -r "$SRC_DIR/lib" "$INSTALL_DIR/lib" 2>/dev/null || true
 mkdir -p "$INSTALL_DIR/iso-build"

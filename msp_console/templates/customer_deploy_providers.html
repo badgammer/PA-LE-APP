@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}{{ slug }} -- Deploy Targets{% endblock %}
+{% block content %}
+<h1>{{ slug }}: Deploy Targets</h1>
+<p class="subtitle">Named instances (Palo Alto firewalls, Windows/IIS servers, and any future target types) that this customer's issued certificates can be deployed to.</p>
+{% if grant == "write" %}
+<p><a class="btn" href="{{ url_for('customer_deploy_provider_new', slug=slug) }}">+ Add deploy target</a></p>
+{% endif %}
+<table>
+  <thead><tr><th>Name</th><th>Type</th><th>Key settings</th><th>Cleanup old certs</th><th></th></tr></thead>
+  <tbody>
+  {% for name, inst in providers.items() %}
+    <tr>
+      <td class="mono">{{ name }}</td>
+      <td><span class="badge">{{ provider_labels.get(inst.type, inst.type) }}</span></td>
+      <td>
+        {% for k, v in inst.settings.items() %}
+          {% if k in ["api_key", "password"] %}
+            <div>{{ k }}: {{ mask(v) }}</div>
+          {% elif k not in ["cleanup_old_certs"] %}
+            <div>{{ k }}: {{ v }}</div>
+          {% endif %}
+        {% endfor %}
+      </td>
+      <td>{{ "Yes" if inst.settings.get("cleanup_old_certs") else "No" }}</td>
+      <td class="actions">
+        {% if grant == "write" %}
+        <form class="inline" method="post" action="{{ url_for('customer_deploy_provider_test', slug=slug, instance_name=name) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="btn btn-secondary btn-small">Test connection</button>
+        </form>
+        <a href="{{ url_for('customer_deploy_provider_edit', slug=slug, instance_name=name) }}" class="btn btn-secondary btn-small">Edit</a>
+        <form class="inline" method="post" action="{{ url_for('customer_deploy_provider_delete', slug=slug, instance_name=name) }}" onsubmit="return confirm('Delete deploy target {{ name }}?');">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="btn btn-danger btn-small">Delete</button>
+        </form>
+        {% else %}
+        <span class="muted">read-only</span>
+        {% endif %}
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5" class="muted">No deploy targets configured yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}
