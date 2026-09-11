@@ -2,6 +2,8 @@
 {% block title %}{{ slug }} -- ACME Settings{% endblock %}
 {% block content %}
 <h1>{{ slug }}: ACME Settings</h1>
+{% set active_tab = "settings" %}
+{% include "_customer_subnav.html" %}
 <p class="subtitle">The account email and ACME server used for every certificate issued for this customer.</p>
 
 {% if grant == "write" %}

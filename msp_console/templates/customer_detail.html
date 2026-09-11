@@ -4,13 +4,9 @@
 <h1>{{ status.slug }}</h1>
 <p class="subtitle">Your access level here: <span class="badge">{{ grant }}</span></p>
 
-<nav class="subnav">
-  <a href="{{ url_for('customer_detail', slug=status.slug) }}" class="active">Overview</a>
-  <a href="{{ url_for('customer_domains_list', slug=status.slug) }}">Domains</a>
-  <a href="{{ url_for('customer_dns_providers_list', slug=status.slug) }}">DNS Providers</a>
-  <a href="{{ url_for('customer_deploy_providers_list', slug=status.slug) }}">Deploy Targets</a>
-  <a href="{{ url_for('customer_settings', slug=status.slug) }}">Settings</a>
-</nav>
+{% set slug = status.slug %}
+{% set active_tab = "overview" %}
+{% include "_customer_subnav.html" %}
 
 <div class="grid-3">
   <div class="card">

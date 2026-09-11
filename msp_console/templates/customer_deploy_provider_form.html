@@ -2,6 +2,8 @@
 {% block title %}{{ "Edit" if mode == "edit" else "Add" }} Deploy Target -- {{ slug }}{% endblock %}
 {% block content %}
 <h1>{{ slug }}: {{ "Edit" if mode == "edit" else "Add" }} deploy target</h1>
+{% set active_tab = "deploy_providers" %}
+{% include "_customer_subnav.html" %}
 {% if mode == "new" %}
 <div class="card">
   <label for="type_selector">Deploy target type</label>

@@ -1,0 +1,16 @@
+{# Shared customer-scoped sub-navigation, included (not extended) by every
+   /customers/<slug>/... page so the tab bar stays visible and correctly
+   highlights the current section no matter which page you're on --
+   previously this nav only existed on the Overview page itself, so
+   navigating to any other tab made it disappear entirely.
+
+   Callers must set `slug` and `active_tab` via {% set %} immediately
+   before including this partial. `active_tab` must be one of:
+   "overview", "domains", "dns_providers", "deploy_providers", "settings" #}
+<nav class="subnav">
+  <a href="{{ url_for('customer_detail', slug=slug) }}" class="{{ 'active' if active_tab == 'overview' }}">Overview</a>
+  <a href="{{ url_for('customer_domains_list', slug=slug) }}" class="{{ 'active' if active_tab == 'domains' }}">Domains</a>
+  <a href="{{ url_for('customer_dns_providers_list', slug=slug) }}" class="{{ 'active' if active_tab == 'dns_providers' }}">DNS Providers</a>
+  <a href="{{ url_for('customer_deploy_providers_list', slug=slug) }}" class="{{ 'active' if active_tab == 'deploy_providers' }}">Deploy Targets</a>
+  <a href="{{ url_for('customer_settings', slug=slug) }}" class="{{ 'active' if active_tab == 'settings' }}">Settings</a>
+</nav>

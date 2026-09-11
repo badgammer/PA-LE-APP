@@ -2,6 +2,8 @@
 {% block title %}{{ slug }} -- DNS Providers{% endblock %}
 {% block content %}
 <h1>{{ slug }}: DNS Providers</h1>
+{% set active_tab = "dns_providers" %}
+{% include "_customer_subnav.html" %}
 <p class="subtitle">Named instances used for this customer's ACME DNS-01 challenge record creation.</p>
 {% if grant == "write" %}
 <p><a class="btn" href="{{ url_for('customer_dns_provider_new', slug=slug) }}">+ Add DNS provider</a></p>

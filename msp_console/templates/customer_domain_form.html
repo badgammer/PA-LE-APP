@@ -2,6 +2,8 @@
 {% block title %}{{ "Edit" if mode == "edit" else "Add" }} Domain -- {{ slug }}{% endblock %}
 {% block content %}
 <h1>{{ slug }}: {{ "Edit" if mode == "edit" else "Add" }} domain</h1>
+{% set active_tab = "domains" %}
+{% include "_customer_subnav.html" %}
 
 {% if mode == "edit" %}
 <div class="card">

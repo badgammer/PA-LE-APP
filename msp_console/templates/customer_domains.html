@@ -2,6 +2,8 @@
 {% block title %}{{ slug }} -- Domains{% endblock %}
 {% block content %}
 <h1>{{ slug }}: Domains</h1>
+{% set active_tab = "domains" %}
+{% include "_customer_subnav.html" %}
 <p class="subtitle">Each entry maps a certificate to a DNS provider and one or more deploy targets (PAN-OS firewalls, IIS servers, etc.), each with its own type-specific settings.</p>
 {% if any_renewal_in_progress %}
   <div class="flash flash-success">A renewal or redeploy is currently running for this customer. Refresh to check progress.</div>

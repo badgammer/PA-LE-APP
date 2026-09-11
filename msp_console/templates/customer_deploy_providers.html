@@ -2,6 +2,8 @@
 {% block title %}{{ slug }} -- Deploy Targets{% endblock %}
 {% block content %}
 <h1>{{ slug }}: Deploy Targets</h1>
+{% set active_tab = "deploy_providers" %}
+{% include "_customer_subnav.html" %}
 <p class="subtitle">Named instances (Palo Alto firewalls, Windows/IIS servers, and any future target types) that this customer's issued certificates can be deployed to.</p>
 {% if grant == "write" %}
 <p><a class="btn" href="{{ url_for('customer_deploy_provider_new', slug=slug) }}">+ Add deploy target</a></p>
