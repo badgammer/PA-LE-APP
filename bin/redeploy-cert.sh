@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
 #
-# Re-runs ONLY the PAN-OS import/attach/commit steps for a certificate
-# that has ALREADY been issued and is sitting on disk -- no new ACME
-# issuance, no DNS-01 challenge, no Let's Encrypt rate-limit usage at
-# all. Useful when the certificate itself is fine but the firewall-side
-# deployment failed or needs to be redone (e.g. after fixing an SSL/TLS
-# profile name, adding a firewall target, or working around the
-# category=certificate vs category=keypair PAN-OS import bug that this
-# appliance previously had).
+# Re-runs ONLY the import/attach/commit (or WinRM import/bind) steps for
+# a certificate that has ALREADY been issued and is sitting on disk -- no
+# new ACME issuance, no DNS-01 challenge, no Let's Encrypt rate-limit
+# usage at all. Works against EVERY deploy target configured for the
+# domain, regardless of type (PAN-OS firewall, IIS server, or any future
+# deploy_providers/ type) -- useful when the certificate itself is fine
+# but one or more target-side deployments failed or need to be redone
+# (e.g. after fixing an SSL/TLS profile name, adding a new deploy
+# target, or fixing IIS binding settings).
 #
 # This is intentionally a thin wrapper: it locates the existing certbot
 # lineage directory for the given domain and hands it to
-# deploy_to_panos.py via the exact same RENEWED_LINEAGE / RENEWED_DOMAINS
+# deploy_certificate.py via the exact same RENEWED_LINEAGE / RENEWED_DOMAINS
 # environment variables that certbot's own --deploy-hook mechanism uses --
-# deploy_to_panos.py has no idea (and does not need to know) whether it
+# deploy_certificate.py has no idea (and does not need to know) whether it
 # was invoked by certbot after a real renewal or by this script against
 # an already-issued certificate.
 #
@@ -80,8 +81,8 @@ log "Redeploying existing certificate for '$DOMAIN' from $LINEAGE_DIR"
 log "(no new ACME issuance -- this does not use any Let's Encrypt rate-limit headroom)"
 
 if RENEWED_LINEAGE="$LINEAGE_DIR" RENEWED_DOMAINS="$DOMAIN" ACME_APPLIANCE_CONFIG="$CONFIG" \
-    python3 "$APPLIANCE_DIR/deploy_to_panos.py" 2>&1 | tee -a "$LOG"; then
-  log "OK: redeployed '$DOMAIN' to its configured firewall target(s)"
+    python3 "$APPLIANCE_DIR/deploy_certificate.py" 2>&1 | tee -a "$LOG"; then
+  log "OK: redeployed '$DOMAIN' to its configured deploy target(s)"
 else
   log "FAILED: redeploy of '$DOMAIN' (see output above; full deploy log entries are also in $LOG)"
   exit 1

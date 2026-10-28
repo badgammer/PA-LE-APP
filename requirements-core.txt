@@ -1,0 +1,23 @@
+requests>=2.31
+PyYAML>=6.0
+# Only needed if you use the route53 DNS provider:
+boto3>=1.34
+
+# Web UI (webui/)
+Flask>=3.0
+bcrypt>=4.1
+pyotp>=2.9
+gunicorn>=22.0
+
+# System Updates feature (webui/system_updates.py) -- PAM-based step-up
+# authentication for the Linux sudo-user credential check. Pure-Python,
+# ctypes-based binding to the system's libpam -- no compilation needed,
+# but the appliance OS must have PAM installed (always true on Rocky/RHEL).
+# NOTE: the System Updates feature itself is only ever ENABLED under the
+# single-instance install profile (see install.sh / ACME_APPLIANCE_PROFILE
+# in webui/app.py) -- it is unconditionally disabled for msp-panos, since
+# it operates on the shared HOST (OS packages, reboot) via a sudoers rule
+# tied to a single fixed service account, which has no correct per-tenant
+# equivalent. python-pam is still installed here regardless of profile
+# since it's a lightweight, no-op-if-unused dependency either way.
+python-pam>=2.0

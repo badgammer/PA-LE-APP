@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}{{ "Edit" if mode == "edit" else "Add" }} Admin{% endblock %}
+{% block content %}
+<h1>{{ "Edit" if mode == "edit" else "Add" }} admin{% if mode == "edit" %}: {{ username }}{% endif %}</h1>
+<div class="card">
+  <form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {% if mode == "new" %}
+    <label for="username">Username</label>
+    <input type="text" id="username" name="username" required autofocus>
+    <label for="password">Password (min 10 characters)</label>
+    <input type="password" id="password" name="password" required>
+    <label for="confirm">Confirm password</label>
+    <input type="password" id="confirm" name="confirm" required>
+    {% else %}
+    <label>Username</label>
+    <input type="text" value="{{ username }}" readonly>
+    <p class="helptext">Password/MFA are managed by the admin themselves under Account, not from here.</p>
+    {% endif %}
+
+    <div class="checkbox-row">
+      <input type="checkbox" id="is_owner" name="is_owner" onchange="toggleGrantTable()"
+             {% if admin.get('is_owner') %}checked{% endif %}>
+      <label for="is_owner" style="margin:0;">Owner (full read/write on every customer, can manage admin accounts)</label>
+    </div>
+
+    <h2>Per-customer access</h2>
+    <p class="helptext">Ignored entirely while "Owner" is checked above. A customer left at "No access" is completely invisible to this admin -- not just hidden buttons, the page itself won't load for them.</p>
+    <table class="grant-table" id="grant-table">
+      <thead><tr><th>Customer</th><th>Access level</th></tr></thead>
+      <tbody>
+      {% for slug in all_slugs %}
+        <tr>
+          <td class="mono">{{ slug }}</td>
+          <td>
+            <select name="grant__{{ slug }}">
+              <option value="" {% if admin.get('customer_grants', {}).get(slug) not in ['read','write'] %}selected{% endif %}>No access</option>
+              <option value="read" {% if admin.get('customer_grants', {}).get(slug) == 'read' %}selected{% endif %}>Read</option>
+              <option value="write" {% if admin.get('customer_grants', {}).get(slug) == 'write' %}selected{% endif %}>Read + write</option>
+            </select>
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="2" class="muted">No customers exist yet.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+
+    <div class="form-actions">
+      <button type="submit" class="btn">{{ "Save changes" if mode == "edit" else "Add admin" }}</button>
+      <a href="{{ url_for('admins_list') }}" class="btn btn-secondary">Cancel</a>
+    </div>
+  </form>
+</div>
+
+<script>
+function toggleGrantTable() {
+  const table = document.getElementById('grant-table');
+  const isOwner = document.getElementById('is_owner').checked;
+  table.style.opacity = isOwner ? '0.4' : '1';
+  table.querySelectorAll('select').forEach(s => s.disabled = isOwner);
+}
+toggleGrantTable();
+</script>
+{% endblock %}

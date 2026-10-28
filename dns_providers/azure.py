@@ -48,8 +48,8 @@ class AzureDnsProvider(BaseDnsProvider):
         # value here is whatever the operator typed into the web UI/YAML --
         # often copy-pasted straight from the Azure portal, which displays
         # zone names in whatever case they were created with (e.g.
-        # "HowardsCams.com"). A plain str.endswith() is case-SENSITIVE, so
-        # "_acme-challenge.vpn.howardscams.com".endswith("HowardsCams.com")
+        # "Fabrikam.com"). A plain str.endswith() is case-SENSITIVE, so
+        # "_acme-challenge.vpn.fabrikam.com".endswith("Fabrikam.com")
         # is False even though they refer to the same zone -- which made
         # every renewal for a mixed-case zone fail with a confusing
         # "not under configured zone" error. Compare case-insensitively,

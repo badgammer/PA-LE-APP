@@ -1,0 +1,26 @@
+# One server block per customer instance, printed (with {{SLUG}}
+# substituted) by bin/msp-provision-customer.sh -- drop the result into
+# /etc/nginx/conf.d/acme-appliance-<slug>.conf. This template is the
+# canonical version.
+
+server {
+    listen 443 ssl http2;
+    server_name {{SLUG}}.appliance.yourmsp.com;
+
+    # ssl_certificate / ssl_certificate_key: use a wildcard cert for
+    # *.appliance.yourmsp.com so adding a customer never requires a
+    # manual TLS cert step for the proxy tier.
+    ssl_certificate     /etc/nginx/ssl/appliance.yourmsp.com/fullchain.pem;
+    ssl_certificate_key /etc/nginx/ssl/appliance.yourmsp.com/privkey.pem;
+
+    access_log /var/log/nginx/acme-appliance-{{SLUG}}-access.log;
+    error_log  /var/log/nginx/acme-appliance-{{SLUG}}-error.log;
+
+    location / {
+        proxy_pass http://unix:/run/acme-appliance/{{SLUG}}/webui.sock;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Ssl on;
+    }
+}

@@ -2,13 +2,13 @@
 {% block title %}Domains{% endblock %}
 {% block content %}
 <h1>Domains</h1>
-<p class="subtitle">Each entry maps a certificate to a DNS provider and one or more Palo Alto targets, each with its own SSL/TLS profile.</p>
+<p class="subtitle">Each entry maps a certificate to a DNS provider and one or more deploy targets (PAN-OS firewalls, IIS servers, etc.), each with its own type-specific settings.</p>
 {% if any_renewal_in_progress %}
   <div class="flash flash-success">A renewal or redeploy is currently running. See the <a href="{{ url_for('logs') }}">log</a> for progress.</div>
 {% endif %}
 <p><a class="btn" href="{{ url_for('domain_new') }}">+ Add domain</a></p>
 <table>
-  <thead><tr><th>Domain</th><th>DNS Provider</th><th>Firewall targets</th><th>Cert expiry</th><th></th></tr></thead>
+  <thead><tr><th>Domain</th><th>DNS Provider</th><th>Deploy targets</th><th>Cert expiry</th><th></th></tr></thead>
   <tbody>
   {% for row in rows %}
     <tr>
@@ -25,8 +25,8 @@
       </td>
       <td><span class="badge">{{ row.entry.dns_provider }}</span></td>
       <td>
-        {% for t in row.entry.panos_targets %}
-          <div>{{ t.firewall }} &rarr; {{ t.ssl_tls_profile or t.globalprotect_portal }}</div>
+        {% for t in row.deploy_targets_display %}
+          <div>{{ t.target }} <span class="badge" title="Deploy target type">{{ t.type }}</span> &rarr; {{ t.summary }}</div>
         {% endfor %}
       </td>
       <td>{{ row.cert_expiry or "not yet issued" }}</td>

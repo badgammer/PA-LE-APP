@@ -55,6 +55,11 @@ a.btn, a.btn:link, a.btn:visited { text-decoration: none; }
 .login-wrap { max-width: 380px; margin: 80px auto; }
 .target-row { display: grid; grid-template-columns: 1.2fr 1fr 1.3fr 0.8fr auto; gap: 8px; align-items: end; margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px dashed var(--border); }
 .target-row label { margin: 0 0 4px; }
+.deploy-target-row { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end; margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px dashed var(--border); }
+.deploy-target-row > div { min-width: 200px; }
+.deploy-target-row label { margin: 0 0 4px; }
+.target-type-fields { display: flex; flex-wrap: wrap; gap: 14px; }
+.target-type-fields > div { min-width: 200px; }
 .additional-name-row { display: grid; grid-template-columns: 1.5fr 1.2fr auto; gap: 8px; align-items: end; margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px dashed var(--border); }
 .additional-name-row label { margin: 0 0 4px; }
 .profile-fetch-row { display: flex; gap: 8px; align-items: center; margin-top: 4px; }

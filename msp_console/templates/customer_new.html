@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Add Customer{% endblock %}
+{% block content %}
+<h1>Add customer</h1>
+<div class="card">
+  <form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label for="slug">Customer slug (lowercase letters/digits/hyphens only, 40 characters or fewer)</label>
+    <input type="text" id="slug" name="slug" pattern="[a-z0-9][a-z0-9-]*[a-z0-9]?" maxlength="40" required autofocus>
+    <p class="helptext">
+      This becomes the directory name under <code>/etc/acme-appliance/customers/</code> for this
+      customer's own appliance.yaml and certbot state. Choose something short and stable -- it's
+      not easily renamed later.
+    </p>
+    <div class="form-actions">
+      <button type="submit" class="btn">Provision customer</button>
+      <a href="{{ url_for('customers_list') }}" class="btn btn-secondary">Cancel</a>
+    </div>
+  </form>
+</div>
+<script>
+// Guards against a double-click (or an impatient re-click while the
+// request is still in flight) sending two overlapping provisioning
+// requests for the SAME slug -- bin/msp-provision-customer.sh already
+// protects itself with its own flock, but this avoids sending the
+// redundant second request in the first place.
+document.querySelector('form').addEventListener('submit', function () {
+  var btn = this.querySelector('button[type="submit"]');
+  if (btn.disabled) { return; }
+  btn.disabled = true;
+  btn.textContent = 'Provisioning...';
+});
+</script>
+{% endblock %}

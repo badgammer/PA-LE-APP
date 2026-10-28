@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}{{ status.slug }}{% endblock %}
+{% block content %}
+<h1>{{ status.slug }}</h1>
+<p class="subtitle">Your access level here: <span class="badge">{{ grant }}</span></p>
+
+{% set slug = status.slug %}
+{% set active_tab = "overview" %}
+{% include "_customer_subnav.html" %}
+
+<div class="grid-3">
+  <div class="card">
+    <div class="stat-value">{{ status.domain_count }}</div>
+    <div class="stat-label">Configured domains</div>
+  </div>
+  <div class="card">
+    <div class="stat-value">{{ status.cert_expiry or "not yet issued" }}</div>
+    <div class="stat-label">Soonest certificate expiry</div>
+  </div>
+  <div class="card">
+    <div class="stat-value">
+      {% if status.renewing %}
+        <span class="badge badge-warn">Renewing&hellip;</span>
+      {% else %}
+        <span class="badge badge-ok">Idle</span>
+      {% endif %}
+    </div>
+    <div class="stat-label">Renewal state</div>
+  </div>
+</div>
+
+{% if status.note %}
+<div class="flash flash-error">{{ status.note }}</div>
+{% endif %}
+
+{% if grant == "write" %}
+<div class="card">
+  <h2 style="margin-top:0;">Actions</h2>
+  <form class="inline" method="post" action="{{ url_for('customer_renew', slug=status.slug) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit" class="btn btn-secondary">Trigger renewal check for all domains</button>
+  </form>
+  <p class="helptext">
+    Runs certbot for every domain configured for this customer in the background -- refresh
+    the log below after a minute or two to check progress. To renew or redeploy just ONE
+    domain, use that domain's own buttons under
+    <a href="{{ url_for('customer_domains_list', slug=status.slug) }}">Domains</a> instead.
+  </p>
+</div>
+
+<div class="card danger-zone">
+  <h2>Deprovision this customer</h2>
+  <p class="helptext">
+    Archives this customer's config/certs/keys to a dated tarball on the host (nothing is
+    deleted outright) and removes its directory tree. This cannot be undone from this
+    dashboard -- recovering requires manual access to the archive on the host.
+  </p>
+  <form method="post" action="{{ url_for('customer_deprovision', slug=status.slug) }}"
+        onsubmit="return confirmDeprovision(this, '{{ status.slug }}');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label for="confirm_slug">Type the customer slug (<code>{{ status.slug }}</code>) to confirm</label>
+    <input type="text" id="confirm_slug" name="confirm_slug" required>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-danger">Deprovision {{ status.slug }}</button>
+    </div>
+  </form>
+  <script>
+  // Guards against a double-click sending two overlapping deprovision
+  // requests -- disabled only AFTER the confirm() dialog is accepted,
+  // never before (canceling the confirm must leave the button
+  // clickable again, not stuck disabled).
+  function confirmDeprovision(form, slug) {
+    if (!confirm('This will archive and remove ' + slug + '. Are you absolutely sure?')) {
+      return false;
+    }
+    var btn = form.querySelector('button[type="submit"]');
+    if (btn.disabled) { return false; }
+    btn.disabled = true;
+    btn.textContent = 'Deprovisioning...';
+    return true;
+  }
+  </script>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2 style="margin-top:0;">Recent log activity</h2>
+  {% if log_error %}
+    <div class="flash flash-error">Could not read log: {{ log_error }}</div>
+  {% else %}
+    <div class="log-box" id="log-box">{{ log_lines or "(no log entries yet)" }}</div>
+  {% endif %}
+  <p style="margin-top:10px;"><button type="button" class="btn btn-secondary btn-small" onclick="refreshLog()">Refresh</button></p>
+</div>
+
+<script>
+function refreshLog() {
+  fetch("{{ url_for('customer_log_fragment', slug=status.slug) }}")
+    .then(r => r.json())
+    .then(data => {
+      const box = document.getElementById('log-box');
+      if (!box) return;
+      box.textContent = data.ok ? (data.log || "(no log entries yet)") : ("Could not read log: " + data.error);
+    })
+    .catch(() => {});
+}
+</script>
+{% endblock %}

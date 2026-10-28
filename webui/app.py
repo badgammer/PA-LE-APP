@@ -30,9 +30,26 @@ import config_store as store  # noqa: E402
 import test_connections  # noqa: E402
 import system_updates  # noqa: E402
 from dns_providers import PROVIDER_FIELDS  # noqa: E402
+from deploy_providers import INSTANCE_FIELDS, TARGET_FIELDS  # noqa: E402
 from cert_naming import safe_cert_name  # noqa: E402
+import domain_logic  # noqa: E402
 
 APPLIANCE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Which install profile this instance is running under (see install.sh /
+# lib/profile-*.sh at the repo root, and deploy_providers/__init__.py's
+# matching ACME_APPLIANCE_PROFILE-based filtering). Currently the ONLY
+# other thing this gates, besides which deploy provider types are
+# available, is the System Updates feature below -- it operates on the
+# shared HOST (dnf update -y, reboot) via a sudoers rule tied to a single
+# fixed service account and a relaxed NoNewPrivileges setting for PAM
+# access, neither of which has a safe per-tenant equivalent under
+# msp-panos, so it is unconditionally disabled for that profile rather
+# than merely hidden -- see system_page()/system_check()/system_apply()/
+# system_reboot() below.
+INSTALLED_PROFILE = os.environ.get("ACME_APPLIANCE_PROFILE", "single-instance").strip() or "single-instance"
+SYSTEM_UPDATES_ENABLED = INSTALLED_PROFILE != "msp-panos"
+
 LOG_PATH = os.environ.get("ACME_APPLIANCE_LOG", "/var/log/acme-appliance.log")
 RENEW_LOCK_DIR = os.environ.get("ACME_APPLIANCE_RENEW_LOCK_DIR", "/var/run/acme-appliance")
 LETSENCRYPT_LIVE_DIR = os.environ.get(
@@ -100,7 +117,10 @@ def check_csrf():
 
 @app.context_processor
 def inject_globals():
-    return {"csrf_token": csrf_token, "current_user": current_user()}
+    return {
+        "csrf_token": csrf_token, "current_user": current_user(),
+        "system_updates_enabled": SYSTEM_UPDATES_ENABLED,
+    }
 
 
 def mask(value: str) -> str:
@@ -255,7 +275,7 @@ def dashboard():
         cfg=cfg,
         domain_count=len(cfg["domains"]),
         provider_count=len(cfg["dns_providers"]),
-        firewall_count=len(cfg["panos_firewalls"]),
+        deploy_provider_count=len(cfg["deploy_providers"]),
         last_lines=last_lines,
         active_renewals=_active_lock_labels(),
     )
@@ -368,7 +388,7 @@ def domain_redeploy(name):
     cfg = store.load_config()
     if not store.get_domain(cfg, name):
         abort(404)
-    if not _cert_lineage_dir(name):
+    if not domain_logic.cert_lineage_dir(name, LETSENCRYPT_LIVE_DIR):
         flash(
             f"No certificate has been issued yet for '{name}' -- nothing to redeploy. "
             "Use 'Renew now' first.", "error",
@@ -413,61 +433,14 @@ def domains_list():
     for d in cfg["domains"]:
         rows.append({
             "entry": d,
-            "additional_names_display": _additional_names_display(d),
-            "cert_expiry": _cert_expiry(d["name"]),
+            "additional_names_display": domain_logic.additional_names_display(d),
+            "deploy_targets_display": domain_logic.deploy_targets_display(d, cfg["deploy_providers"]),
+            "cert_expiry": domain_logic.cert_expiry(d["name"], LETSENCRYPT_LIVE_DIR),
             "renewal_in_progress": _renewal_in_progress(d["name"]),
             "redeploy_in_progress": _redeploy_in_progress(d["name"]),
-            "has_cert": _cert_lineage_dir(d["name"]) is not None,
+            "has_cert": domain_logic.cert_lineage_dir(d["name"], LETSENCRYPT_LIVE_DIR) is not None,
         })
     return render_template("domains.html", rows=rows, any_renewal_in_progress=bool(_active_lock_labels()))
-
-
-def _additional_names_display(entry: dict) -> list:
-    """
-    Returns [{"name": ..., "override": provider_name_or_empty}] for
-    display on the Domains list page -- override is non-empty only when
-    that specific name uses a DIFFERENT dns_provider than the entry's
-    own default (i.e. a genuine per-name override), so the UI can show
-    a small badge only where it's actually meaningful.
-    """
-    default_provider = entry.get("dns_provider")
-    result = []
-    for item in entry.get("additional_names", []) or []:
-        if isinstance(item, dict):
-            name = item["name"]
-            override = item.get("dns_provider") or ""
-            if override == default_provider:
-                override = ""
-        else:
-            name = item
-            override = ""
-        result.append({"name": name, "override": override})
-    return result
-
-
-def _cert_lineage_dir(domain_name: str):
-    for candidate in (safe_cert_name(domain_name), domain_name):
-        path = os.path.join(LETSENCRYPT_LIVE_DIR, candidate)
-        if os.path.isdir(path):
-            return path
-    return None
-
-
-def _cert_expiry(domain_name: str):
-    lineage_dir = _cert_lineage_dir(domain_name)
-    if not lineage_dir:
-        return None
-    cert_path = os.path.join(lineage_dir, "cert.pem")
-    if not os.path.exists(cert_path):
-        return None
-    try:
-        out = subprocess.check_output(
-            ["openssl", "x509", "-enddate", "-noout", "-in", cert_path],
-            stderr=subprocess.DEVNULL, timeout=5,
-        ).decode()
-        return out.strip().replace("notAfter=", "")
-    except Exception:  # noqa: BLE001
-        return None
 
 
 @app.route("/domains/<path:name>/download")
@@ -476,7 +449,7 @@ def domain_download(name):
     cfg = store.load_config()
     if not store.get_domain(cfg, name):
         abort(404)
-    lineage_dir = _cert_lineage_dir(name)
+    lineage_dir = domain_logic.cert_lineage_dir(name, LETSENCRYPT_LIVE_DIR)
     if not lineage_dir:
         flash(f"No certificate has been issued yet for '{name}'.", "error")
         return redirect(url_for("domains_list"))
@@ -506,7 +479,7 @@ def domain_new():
     cfg = store.load_config()
     if request.method == "POST":
         check_csrf()
-        name, entry, error = _domain_from_form(cfg)
+        name, entry, error = domain_logic.domain_from_form(cfg, request.form, TARGET_FIELDS)
         if error:
             flash(error, "error")
         elif store.get_domain(cfg, name):
@@ -518,8 +491,9 @@ def domain_new():
             return redirect(url_for("domains_list"))
     return render_template(
         "domain_form.html", mode="new", entry=None, has_cert=False, redeploy_in_progress=False,
-        additional_names_for_form=[],
-        providers=cfg["dns_providers"], firewalls=cfg["panos_firewalls"],
+        additional_names_for_form=[], deploy_targets_for_form=[],
+        providers=cfg["dns_providers"], deploy_providers=cfg["deploy_providers"],
+        target_fields_schema=TARGET_FIELDS,
     )
 
 
@@ -532,7 +506,7 @@ def domain_edit(name):
         abort(404)
     if request.method == "POST":
         check_csrf()
-        new_name, new_entry, error = _domain_from_form(cfg)
+        new_name, new_entry, error = domain_logic.domain_from_form(cfg, request.form, TARGET_FIELDS)
         if error:
             flash(error, "error")
         else:
@@ -543,30 +517,13 @@ def domain_edit(name):
             return redirect(url_for("domains_list"))
     return render_template(
         "domain_form.html", mode="edit", entry=entry,
-        has_cert=_cert_lineage_dir(name) is not None,
+        has_cert=domain_logic.cert_lineage_dir(name, LETSENCRYPT_LIVE_DIR) is not None,
         redeploy_in_progress=_redeploy_in_progress(name),
-        additional_names_for_form=_additional_names_for_form(entry),
-        providers=cfg["dns_providers"], firewalls=cfg["panos_firewalls"],
+        additional_names_for_form=domain_logic.additional_names_for_form(entry),
+        deploy_targets_for_form=entry.get("deploy_targets", []),
+        providers=cfg["dns_providers"], deploy_providers=cfg["deploy_providers"],
+        target_fields_schema=TARGET_FIELDS,
     )
-
-
-def _additional_names_for_form(entry: dict) -> list:
-    """
-    Returns [{"name": ..., "provider_override": provider_or_empty}] for
-    populating the Edit Domain form's repeatable "Additional names"
-    rows. Unlike _additional_names_display (used on the Domains list),
-    this deliberately keeps provider_override EMPTY (not resolved to the
-    entry's default) whenever the stored entry didn't specify one, so
-    the form's dropdown correctly pre-selects "(same as primary)"
-    rather than appearing to explicitly re-select the default provider.
-    """
-    result = []
-    for item in entry.get("additional_names", []) or []:
-        if isinstance(item, dict):
-            result.append({"name": item["name"], "provider_override": item.get("dns_provider") or ""})
-        else:
-            result.append({"name": item, "provider_override": ""})
-    return result
 
 
 @app.route("/domains/<path:name>/delete", methods=["POST"])
@@ -580,80 +537,19 @@ def domain_delete(name):
     return redirect(url_for("domains_list"))
 
 
-def _domain_from_form(cfg):
-    name = request.form.get("name", "").strip()
-    dns_provider = request.form.get("dns_provider", "").strip()
-    cert_name_prefix = request.form.get("cert_name_prefix", "").strip() or "gp-portal-cert"
-
-    if not name:
-        return None, None, "Domain name is required."
-    if dns_provider not in cfg["dns_providers"]:
-        return None, None, "Select a valid primary DNS provider."
-
-    # Additional names (SANs): each row is a name + an optional per-name
-    # DNS provider override. An override is only stored (as a {"name":
-    # ..., "dns_provider": ...} dict) when it differs from the entry's
-    # own primary dns_provider -- otherwise the name is stored as a
-    # plain string, keeping the YAML clean and fully backward-compatible
-    # with configs written before this feature existed.
-    additional_names = []
-    an_names = request.form.getlist("additional_name[]")
-    an_providers = request.form.getlist("additional_name_provider[]")
-    for an_name, an_provider in zip(an_names, an_providers):
-        an_name = an_name.strip()
-        if not an_name:
-            continue
-        if an_provider and an_provider != dns_provider:
-            if an_provider not in cfg["dns_providers"]:
-                return None, None, f"Unknown DNS provider override '{an_provider}' for additional name '{an_name}'."
-            additional_names.append({"name": an_name, "dns_provider": an_provider})
-        else:
-            additional_names.append(an_name)
-
-    targets = []
-    firewalls = request.form.getlist("target_firewall[]")
-    cert_types = request.form.getlist("target_cert_type[]")
-    cert_values = request.form.getlist("target_cert_value[]")
-    vsyses = request.form.getlist("target_vsys[]")
-    for fw, cert_type, cert_value, vsys in zip(firewalls, cert_types, cert_values, vsyses):
-        if not fw or not cert_value:
-            continue
-        if fw not in cfg["panos_firewalls"]:
-            return None, None, f"Unknown firewall '{fw}' in target list."
-        target = {"firewall": fw}
-        if cert_type == "globalprotect_portal":
-            target["globalprotect_portal"] = cert_value
-        else:
-            target["ssl_tls_profile"] = cert_value
-            if vsys:
-                target["vsys"] = vsys
-        targets.append(target)
-
-    if not targets:
-        return None, None, "At least one firewall target is required."
-
-    entry = {
-        "name": name,
-        "dns_provider": dns_provider,
-        "cert_name_prefix": cert_name_prefix,
-        "panos_targets": targets,
-    }
-    if additional_names:
-        entry["additional_names"] = additional_names
-    return name, entry, None
-
-
-@app.route("/firewalls/<name>/ssl-profiles")
+@app.route("/deploy-providers/<name>/options")
 @login_required
-def firewall_ssl_profiles(name):
+def deploy_provider_options(name):
     cfg = store.load_config()
-    fw_settings = cfg["panos_firewalls"].get(name)
-    if fw_settings is None:
-        return jsonify({"ok": False, "error": f"Unknown firewall '{name}'"}), 404
-    vsys = request.args.get("vsys") or None
-    ok, result = test_connections.list_ssl_profiles(fw_settings, vsys=vsys)
+    instance = cfg["deploy_providers"].get(name)
+    if instance is None:
+        return jsonify({"ok": False, "error": f"Unknown deploy target '{name}'"}), 404
+    kwargs = {}
+    if request.args.get("vsys"):
+        kwargs["vsys"] = request.args.get("vsys")
+    ok, result = test_connections.list_target_options(instance["type"], instance.get("settings", {}), **kwargs)
     if ok:
-        return jsonify({"ok": True, "profiles": result})
+        return jsonify({"ok": True, "options": result})
     return jsonify({"ok": False, "error": result})
 
 
@@ -682,7 +578,7 @@ def dns_provider_new():
         elif instance_name in cfg["dns_providers"]:
             flash(f"A DNS provider named '{instance_name}' already exists.", "error")
         else:
-            settings = _settings_from_form(provider_type, existing_settings={})
+            settings = domain_logic.settings_from_form(PROVIDER_FIELDS, provider_type, existing_settings={}, form=request.form)
             store.upsert_dns_provider(cfg, instance_name, provider_type, settings)
             store.save_config(cfg)
             flash(f"Added DNS provider '{instance_name}'.", "success")
@@ -705,7 +601,7 @@ def dns_provider_edit(instance_name):
     provider_type = instance["type"]
     if request.method == "POST":
         check_csrf()
-        settings = _settings_from_form(provider_type, existing_settings=instance.get("settings", {}))
+        settings = domain_logic.settings_from_form(PROVIDER_FIELDS, provider_type, existing_settings=instance.get("settings", {}), form=request.form)
         store.upsert_dns_provider(cfg, instance_name, provider_type, settings)
         store.save_config(cfg)
         flash(f"Updated DNS provider '{instance_name}'.", "success")
@@ -750,123 +646,123 @@ def dns_provider_test(instance_name):
     return redirect(url_for("dns_providers_list"))
 
 
-def _settings_from_form(provider_type: str, existing_settings: dict) -> dict:
-    settings = dict(existing_settings)
-    for field in PROVIDER_FIELDS[provider_type]["fields"]:
-        fname = field["name"]
-        if field.get("type") == "checkbox":
-            settings[fname] = request.form.get(fname) == "on"
-            continue
-        value = request.form.get(fname, "")
-        if field.get("secret") and not value:
-            continue
-        if value == "" and "default" in field:
-            settings[fname] = field["default"]
-        elif field.get("type") == "number":
-            settings[fname] = int(value) if value else field.get("default", 0)
-        else:
-            settings[fname] = value
-    return settings
 
 
-@app.route("/firewalls")
+
+@app.route("/deploy-providers")
 @login_required
-def firewalls_list():
+def deploy_providers_list():
     cfg = store.load_config()
-    return render_template("firewalls.html", firewalls=cfg["panos_firewalls"], mask=mask)
+    provider_labels = {k: v["label"] for k, v in INSTANCE_FIELDS.items()}
+    return render_template(
+        "deploy_providers.html", providers=cfg["deploy_providers"],
+        provider_labels=provider_labels, mask=mask,
+    )
 
 
-@app.route("/firewalls/new", methods=["GET", "POST"])
+@app.route("/deploy-providers/new", methods=["GET", "POST"])
 @login_required
-def firewall_new():
+def deploy_provider_new():
     cfg = store.load_config()
+    selected_type = request.values.get("type", next(iter(INSTANCE_FIELDS)))
     if request.method == "POST":
         check_csrf()
-        name = request.form.get("name", "").strip()
-        if not name:
-            flash("A firewall name is required.", "error")
-        elif name in cfg["panos_firewalls"]:
-            flash(f"A firewall named '{name}' already exists.", "error")
+        instance_name = request.form.get("instance_name", "").strip()
+        provider_type = request.form.get("type", "").strip()
+        if not instance_name or provider_type not in INSTANCE_FIELDS:
+            flash("A unique name and a valid deploy target type are required.", "error")
+        elif instance_name in cfg["deploy_providers"]:
+            flash(f"A deploy target named '{instance_name}' already exists.", "error")
         else:
-            settings = _firewall_settings_from_form(existing={})
-            store.upsert_firewall(cfg, name, settings)
+            settings = domain_logic.settings_from_form(INSTANCE_FIELDS, provider_type, existing_settings={}, form=request.form)
+            store.upsert_deploy_provider(cfg, instance_name, provider_type, settings)
             store.save_config(cfg)
-            flash(f"Added firewall '{name}'.", "success")
-            return redirect(url_for("firewalls_list"))
-    return render_template("firewall_form.html", mode="new", name="", settings={})
+            flash(f"Added deploy target '{instance_name}'.", "success")
+            return redirect(url_for("deploy_providers_list"))
+        selected_type = provider_type or selected_type
+    return render_template(
+        "deploy_provider_form.html", mode="new", instance_name="",
+        provider_fields=INSTANCE_FIELDS, selected_type=selected_type,
+        existing_settings={},
+    )
 
 
-@app.route("/firewalls/<name>/edit", methods=["GET", "POST"])
+@app.route("/deploy-providers/<instance_name>/edit", methods=["GET", "POST"])
 @login_required
-def firewall_edit(name):
+def deploy_provider_edit(instance_name):
     cfg = store.load_config()
-    settings = cfg["panos_firewalls"].get(name)
-    if settings is None:
+    instance = cfg["deploy_providers"].get(instance_name)
+    if not instance:
         abort(404)
+    provider_type = instance["type"]
     if request.method == "POST":
         check_csrf()
-        new_settings = _firewall_settings_from_form(existing=settings)
-        store.upsert_firewall(cfg, name, new_settings)
+        settings = domain_logic.settings_from_form(INSTANCE_FIELDS, provider_type, existing_settings=instance.get("settings", {}), form=request.form)
+        store.upsert_deploy_provider(cfg, instance_name, provider_type, settings)
         store.save_config(cfg)
-        flash(f"Updated firewall '{name}'.", "success")
-        return redirect(url_for("firewalls_list"))
-    return render_template("firewall_form.html", mode="edit", name=name, settings=settings)
+        flash(f"Updated deploy target '{instance_name}'.", "success")
+        return redirect(url_for("deploy_providers_list"))
+    return render_template(
+        "deploy_provider_form.html", mode="edit", instance_name=instance_name,
+        provider_fields=INSTANCE_FIELDS, selected_type=provider_type,
+        existing_settings=instance.get("settings", {}),
+    )
 
 
-@app.route("/firewalls/<name>/delete", methods=["POST"])
+@app.route("/deploy-providers/<instance_name>/delete", methods=["POST"])
 @login_required
-def firewall_delete(name):
+def deploy_provider_delete(instance_name):
     check_csrf()
     cfg = store.load_config()
-    used_by = store.firewall_in_use(cfg, name)
+    used_by = store.deploy_provider_in_use(cfg, instance_name)
     if used_by:
-        flash(f"Cannot delete '{name}' -- still used by domain(s): {', '.join(used_by)}.", "error")
+        flash(f"Cannot delete '{instance_name}' -- still used by domain(s): {', '.join(used_by)}.", "error")
     else:
-        store.delete_firewall(cfg, name)
+        store.delete_deploy_provider(cfg, instance_name)
         store.save_config(cfg)
-        flash(f"Deleted firewall '{name}'.", "success")
-    return redirect(url_for("firewalls_list"))
+        flash(f"Deleted deploy target '{instance_name}'.", "success")
+    return redirect(url_for("deploy_providers_list"))
 
 
-@app.route("/firewalls/<name>/test", methods=["POST"])
+@app.route("/deploy-providers/<instance_name>/test", methods=["POST"])
 @login_required
-def firewall_test(name):
+def deploy_provider_test(instance_name):
     check_csrf()
     cfg = store.load_config()
-    settings = cfg["panos_firewalls"].get(name)
-    if settings is None:
+    instance = cfg["deploy_providers"].get(instance_name)
+    if not instance:
         abort(404)
-    ok, message = test_connections.test_panos_firewall(settings)
-    flash(f"'{name}': {message}", "success" if ok else "error")
-    return redirect(url_for("firewalls_list"))
+    ok, message = test_connections.test_deploy_provider(instance["type"], instance.get("settings", {}))
+    if ok is True:
+        flash(f"'{instance_name}': {message}", "success")
+    elif ok is False:
+        flash(f"'{instance_name}' test failed: {message}", "error")
+    else:
+        flash(f"'{instance_name}': {message}", "error")
+    return redirect(url_for("deploy_providers_list"))
 
 
-def _firewall_settings_from_form(existing: dict) -> dict:
-    hostname = request.form.get("hostname", "").strip()
-    api_key = request.form.get("api_key", "").strip()
-    username = request.form.get("username", "").strip()
-    password = request.form.get("password", "").strip()
-    verify_tls = request.form.get("verify_tls") == "on"
-    cleanup_old_certs = request.form.get("cleanup_old_certs") == "on"
-
-    settings = dict(existing)
-    settings["hostname"] = hostname
-    settings["verify_tls"] = verify_tls
-    settings["cleanup_old_certs"] = cleanup_old_certs
-    if api_key:
-        settings["api_key"] = api_key
-        settings.pop("username", None)
-        settings.pop("password", None)
-    elif username and password:
-        settings["username"] = username
-        settings["password"] = password
-        settings.pop("api_key", None)
-    return settings
+def _require_system_updates_enabled():
+    """
+    The System Updates feature (OS package checks/updates, reboot)
+    operates on the shared HOST, not per-tenant, via a sudoers rule tied
+    to a single fixed service account (see
+    iso-build/sudoers.d/acme-appliance-updates) and a relaxed
+    NoNewPrivileges setting needed for PAM step-up auth. Neither has a
+    safe per-customer equivalent under the msp-panos profile (where each
+    customer instance runs as its OWN system account, and that sudoers
+    rule is never installed for this profile at all -- see
+    lib/profile-msp-panos.sh) -- so every route below refuses outright
+    rather than silently failing partway through a privileged action.
+    """
+    if not SYSTEM_UPDATES_ENABLED:
+        abort(404, "The System Updates feature is not available under the msp-panos install profile.")
 
 
 @app.route("/system")
 @login_required
 def system_page():
+    _require_system_updates_enabled()
     return render_template(
         "system.html",
         check_status=system_updates.get_check_status(),
@@ -880,6 +776,7 @@ def system_page():
 @app.route("/system/check", methods=["POST"])
 @login_required
 def system_check():
+    _require_system_updates_enabled()
     check_csrf()
     ok, message = system_updates.trigger_check()
     flash(message, "success" if ok else "error")
@@ -889,6 +786,7 @@ def system_check():
 @app.route("/system/apply", methods=["POST"])
 @login_required
 def system_apply():
+    _require_system_updates_enabled()
     check_csrf()
     username = request.form.get("sudo_username", "")
     password = request.form.get("sudo_password", "")
@@ -905,6 +803,7 @@ def system_apply():
 @app.route("/system/reboot", methods=["POST"])
 @login_required
 def system_reboot():
+    _require_system_updates_enabled()
     check_csrf()
     username = request.form.get("sudo_username", "")
     password = request.form.get("sudo_password", "")

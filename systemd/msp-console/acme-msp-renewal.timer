@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily ACME renewal check for every customer namespace (msp-panos profile)
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1800
+Persistent=true
+
+[Install]
+WantedBy=timers.target

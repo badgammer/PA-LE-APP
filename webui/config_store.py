@@ -1,4 +1,20 @@
-"""Safe, atomic read/write access to appliance.yaml for the web UI."""
+"""
+Safe, atomic read/write access to an appliance.yaml file.
+
+Every function here accepts an OPTIONAL explicit `config_path` argument.
+When omitted, they fall back to the module-level CONFIG_PATH (derived
+from ACME_APPLIANCE_CONFIG, exactly as before) -- so webui/app.py (the
+single-instance profile) needs ZERO changes and keeps working against
+one fixed file, one process, exactly as it always has.
+
+The explicit-path form exists so msp_console/ (the msp-panos profile)
+can operate against MANY different appliance.yaml files -- one per
+customer, each physically separate on disk under
+/etc/acme-appliance/customers/<slug>/appliance.yaml -- from within the
+SAME running process, without needing a separate CONFIG_PATH env var
+per customer (which would require a separate process/systemd unit per
+customer, exactly the model this redesign removes).
+"""
 import copy
 import datetime
 import fcntl
@@ -9,55 +25,112 @@ from typing import Optional
 import yaml
 
 CONFIG_PATH = os.environ.get("ACME_APPLIANCE_CONFIG", "/etc/acme-appliance/appliance.yaml")
-BACKUP_DIR = os.path.join(os.path.dirname(CONFIG_PATH), "backups")
-LOCK_PATH = CONFIG_PATH + ".lock"
 
 DEFAULT_CONFIG = {
     "acme": {"email": "", "server": "https://acme-v02.api.letsencrypt.org/directory"},
     "dns_providers": {},
-    "panos_firewalls": {},
+    "deploy_providers": {},
     "domains": [],
 }
 
 
-def _ensure_parent_dirs():
-    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
-    os.makedirs(BACKUP_DIR, exist_ok=True)
+def _backup_dir(config_path: str) -> str:
+    return os.path.join(os.path.dirname(config_path), "backups")
 
 
-def load_config() -> dict:
-    _ensure_parent_dirs()
-    if not os.path.exists(CONFIG_PATH):
+def _lock_path(config_path: str) -> str:
+    return config_path + ".lock"
+
+
+def _ensure_parent_dirs(config_path: str) -> None:
+    os.makedirs(os.path.dirname(config_path), exist_ok=True)
+    os.makedirs(_backup_dir(config_path), exist_ok=True)
+
+
+def _migrate_legacy_config(cfg: dict) -> bool:
+    """
+    One-time, in-memory migration of pre-multi-target appliance.yaml
+    files (from before the "single pane of glass" deploy_providers/
+    generalization) into the current schema:
+      - the old top-level panos_firewalls[] map becomes deploy_providers[]
+        (each entry tagged type: "panos", with its old settings kept as-is).
+      - each domain's old panos_targets[] list becomes deploy_targets[],
+        with each {"firewall": ..., "ssl_tls_profile"/"globalprotect_portal": ...,
+        "vsys": ...} row rewritten to {"target": ..., "cert_field_type": ...,
+        "cert_field_value": ..., "vsys": ...}.
+    Returns True if anything was migrated, in which case the caller
+    should persist the result via save_config() so this only ever runs
+    once per appliance.yaml file (subsequent loads will find
+    deploy_providers/deploy_targets already in place and skip migration
+    entirely).
+    """
+    migrated = False
+
+    if "panos_firewalls" in cfg:
+        cfg.setdefault("deploy_providers", {})
+        for name, settings in cfg.pop("panos_firewalls").items():
+            cfg["deploy_providers"].setdefault(name, {"type": "panos", "settings": settings})
+        migrated = True
+
+    for d in cfg.get("domains", []):
+        if "panos_targets" in d:
+            new_targets = []
+            for t in d.pop("panos_targets"):
+                entry = {"target": t["firewall"]}
+                if t.get("globalprotect_portal"):
+                    entry["cert_field_type"] = "globalprotect_portal"
+                    entry["cert_field_value"] = t["globalprotect_portal"]
+                else:
+                    entry["cert_field_type"] = "ssl_tls_profile"
+                    entry["cert_field_value"] = t.get("ssl_tls_profile", "")
+                if t.get("vsys"):
+                    entry["vsys"] = t["vsys"]
+                new_targets.append(entry)
+            d["deploy_targets"] = new_targets
+            migrated = True
+
+    return migrated
+
+
+def load_config(config_path: str = None) -> dict:
+    config_path = config_path or CONFIG_PATH
+    _ensure_parent_dirs(config_path)
+    if not os.path.exists(config_path):
         return copy.deepcopy(DEFAULT_CONFIG)
-    with open(CONFIG_PATH, "r") as f:
+    with open(config_path, "r") as f:
         cfg = yaml.safe_load(f) or {}
     for key, default in DEFAULT_CONFIG.items():
         cfg.setdefault(key, copy.deepcopy(default))
     cfg["acme"].setdefault("email", "")
     cfg["acme"].setdefault("server", DEFAULT_CONFIG["acme"]["server"])
+    if _migrate_legacy_config(cfg):
+        save_config(cfg, config_path=config_path)
     return cfg
 
 
-def save_config(cfg: dict) -> None:
-    _ensure_parent_dirs()
-    with open(LOCK_PATH, "w") as lock_f:
+def save_config(cfg: dict, config_path: str = None) -> None:
+    config_path = config_path or CONFIG_PATH
+    _ensure_parent_dirs(config_path)
+    lock_path = _lock_path(config_path)
+    backup_dir = _backup_dir(config_path)
+    with open(lock_path, "w") as lock_f:
         fcntl.flock(lock_f, fcntl.LOCK_EX)
         try:
-            if os.path.exists(CONFIG_PATH):
+            if os.path.exists(config_path):
                 stamp = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-                shutil.copy2(CONFIG_PATH, os.path.join(BACKUP_DIR, f"appliance-{stamp}.yaml"))
-                _prune_old_backups()
-            tmp_path = CONFIG_PATH + ".tmp"
+                shutil.copy2(config_path, os.path.join(backup_dir, f"appliance-{stamp}.yaml"))
+                _prune_old_backups(backup_dir)
+            tmp_path = config_path + ".tmp"
             with open(tmp_path, "w") as f:
                 yaml.safe_dump(cfg, f, default_flow_style=False, sort_keys=False)
             os.chmod(tmp_path, 0o600)
-            os.replace(tmp_path, CONFIG_PATH)
+            os.replace(tmp_path, config_path)
         finally:
             fcntl.flock(lock_f, fcntl.LOCK_UN)
 
 
-def _prune_old_backups(keep: int = 30) -> None:
-    backups = sorted((os.path.join(BACKUP_DIR, f) for f in os.listdir(BACKUP_DIR)), key=os.path.getmtime)
+def _prune_old_backups(backup_dir: str, keep: int = 30) -> None:
+    backups = sorted((os.path.join(backup_dir, f) for f in os.listdir(backup_dir)), key=os.path.getmtime)
     for path in backups[:-keep]:
         try:
             os.remove(path)
@@ -113,19 +186,19 @@ def dns_provider_in_use(cfg: dict, instance_name: str) -> list:
     return used
 
 
-def upsert_firewall(cfg: dict, name: str, settings: dict) -> None:
-    cfg["panos_firewalls"][name] = settings
+def upsert_deploy_provider(cfg: dict, name: str, provider_type: str, settings: dict) -> None:
+    cfg["deploy_providers"][name] = {"type": provider_type, "settings": settings}
 
 
-def delete_firewall(cfg: dict, name: str) -> None:
-    cfg["panos_firewalls"].pop(name, None)
+def delete_deploy_provider(cfg: dict, name: str) -> None:
+    cfg["deploy_providers"].pop(name, None)
 
 
-def firewall_in_use(cfg: dict, name: str) -> list:
+def deploy_provider_in_use(cfg: dict, name: str) -> list:
     used = []
     for d in cfg["domains"]:
-        for t in d.get("panos_targets", []):
-            if t.get("firewall") == name:
+        for t in d.get("deploy_targets", []):
+            if t.get("target") == name:
                 used.append(d["name"])
                 break
     return used

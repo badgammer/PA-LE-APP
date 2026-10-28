@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Log in{% endblock %}
+{% block content %}
+<div class="login-wrap">
+<h1>MSP Console</h1>
+<p class="subtitle">Fleet-wide customer management -- separate from any customer's own login.</p>
+<div class="card">
+  <form method="post">
+    <label for="username">Username</label>
+    <input type="text" id="username" name="username" required autofocus>
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" required>
+    <div class="form-actions">
+      <button type="submit" class="btn">Log in</button>
+    </div>
+  </form>
+</div>
+</div>
+{% endblock %}

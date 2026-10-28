@@ -2,6 +2,9 @@ requests>=2.31
 PyYAML>=6.0
 # Only needed if you use the route53 DNS provider:
 boto3>=1.34
+# Only needed if you use the iis deploy provider (deploy_providers/iis.py) --
+# talks WinRM to remote Windows/IIS hosts. Not required for panos-only setups.
+pywinrm>=0.4
 
 # Web UI (webui/)
 Flask>=3.0

@@ -1,32 +1,21 @@
 """
 Wraps dns_providers.get_provider(...).test_connection() and
-panos.PanosClient(...) helper calls for the web UI's "Test Connection"
-buttons and the SSL/TLS profile picker, normalizing results into
-(ok: bool, message-or-data) tuples.
+deploy_providers.get_provider(...).test_connection()/list_options() for
+the web UI's "Test Connection" and "Fetch options" buttons, normalizing
+results into (ok: bool-or-None, message-or-data) tuples.
 """
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from dns_providers import get_provider, DnsProviderError  # noqa: E402
-from panos import PanosClient, PanosError  # noqa: E402
-
-
-def _make_client(fw_settings: dict) -> PanosClient:
-    return PanosClient(
-        hostname=fw_settings["hostname"],
-        api_key=fw_settings.get("api_key") or None,
-        username=fw_settings.get("username") or None,
-        password=fw_settings.get("password") or None,
-        verify_tls=fw_settings.get("verify_tls", False),
-        timeout=15,
-    )
+from dns_providers import get_provider as get_dns_provider, DnsProviderError  # noqa: E402
+from deploy_providers import get_provider as get_deploy_provider, DeployProviderError  # noqa: E402
 
 
 def test_dns_provider(provider_type: str, settings: dict):
     try:
-        provider = get_provider(provider_type, settings)
+        provider = get_dns_provider(provider_type, settings)
         message = provider.test_connection()
         return True, message
     except NotImplementedError as exc:
@@ -37,40 +26,40 @@ def test_dns_provider(provider_type: str, settings: dict):
         return False, f"Unexpected error: {exc}"
 
 
-def test_panos_firewall(fw_settings: dict):
+def test_deploy_provider(provider_type: str, settings: dict):
     """
-    Note: this calls PanosClient.system_info(), which is an "Operational
-    Requests" XML API call. If the admin role assigned to this firewall's
-    API account only has "Configuration"/"Import"/"Commit" enabled (the
-    minimum for actual cert deployment) but not "Operational Requests",
-    this test will fail even though real renewals/deployments would
-    still succeed -- PanosClient surfaces a hint about this in the error
-    message when it looks like a permissions problem.
+    Note (PAN-OS specifically): this calls PanosClient.system_info(), an
+    "Operational Requests" XML API call. If the admin role assigned to a
+    panos-type instance's API account only has Configuration/Import/Commit
+    enabled (the minimum for actual cert deployment) but not Operational
+    Requests, this test will fail even though real deploys would still
+    succeed -- PanosClient surfaces a hint about this in the error message
+    when it looks like a permissions problem.
     """
     try:
-        client = _make_client(fw_settings)
-        info = client.system_info()
-        return True, (
-            f"Connected to {info.get('hostname', fw_settings['hostname'])} "
-            f"({info.get('model', 'unknown model')}, "
-            f"PAN-OS {info.get('sw-version', 'unknown')})."
-        )
-    except PanosError as exc:
+        provider = get_deploy_provider(provider_type, settings)
+        message = provider.test_connection()
+        return True, message
+    except NotImplementedError as exc:
+        return None, str(exc)
+    except DeployProviderError as exc:
         return False, str(exc)
     except Exception as exc:  # noqa: BLE001
         return False, f"Unexpected error: {exc}"
 
 
-def list_ssl_profiles(fw_settings: dict, vsys: str = None):
+def list_target_options(provider_type: str, settings: dict, **kwargs):
     """
-    Returns (True, [profile_names...]) on success, or (False, error_message)
-    on failure. Used by the domain form's "Fetch profiles" button.
+    Used by the Domain form's "Fetch options" button (e.g. PAN-OS SSL/TLS
+    Service Profile names, or IIS site names). Returns (True, [options...])
+    on success, or (False, error_message) on failure/unsupported.
     """
     try:
-        client = _make_client(fw_settings)
-        profiles = client.list_ssl_tls_profiles(vsys=vsys)
-        return True, profiles
-    except PanosError as exc:
+        provider = get_deploy_provider(provider_type, settings)
+        return True, provider.list_options(**kwargs)
+    except NotImplementedError as exc:
+        return False, str(exc)
+    except DeployProviderError as exc:
         return False, str(exc)
     except Exception as exc:  # noqa: BLE001
         return False, f"Unexpected error: {exc}"

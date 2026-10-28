@@ -1,0 +1,78 @@
+[Unit]
+Description=ACME Appliance MSP Console -- fleet dashboard and customer management (msp-panos profile)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=acme-msp-console
+Group=acme-msp-console
+WorkingDirectory=/opt/acme-appliance/msp_console
+
+Environment=ACME_APPLIANCE_PROFILE=msp-panos
+Environment=ACME_MSP_CONSOLE_ADMINS=/etc/acme-appliance/msp-console/admins.yaml
+Environment=ACME_MSP_CONSOLE_SECRET_KEY_FILE=/etc/acme-appliance/msp-console/secret_key
+Environment=ACME_MSP_CONSOLE_LOG=/var/log/acme-appliance/msp-console.log
+Environment=ACME_MSP_CONSOLE_CUSTOMERS_DIR=/etc/acme-appliance/customers
+Environment=ACME_APPLIANCE_DIR=/opt/acme-appliance
+# The acme-msp-console account's own $HOME (see lib/profile-msp-panos.sh's
+# useradd --home ...) is set to this same directory
+# (/opt/acme-appliance/msp_console) -- which is the appliance's CODE
+# directory, not writable under ProtectSystem=strict (deliberately: this
+# process should never be able to modify its own source). This was
+# observed to cause "Control server error: [Errno 30] Read-only file
+# system: '/opt/acme-appliance/msp_console/.gunicorn'" -- some component
+# in the gunicorn/Flask stack writing a dotfile relative to $HOME (or,
+# possibly, relative to the current working directory below, which
+# happens to be the identical path in this configuration, so the two
+# cases cannot be distinguished from the log alone). Redirecting HOME to
+# a directory this account already owns and can write to (its own
+# console config directory, already in ReadWritePaths= below) resolves
+# the $HOME-based case; if this specific warning persists after
+# applying this fix, the cause is more likely a literal
+# cwd-relative write, and WorkingDirectory below may need to move to a
+# writable directory instead (with PYTHONPATH set to the code directory
+# so gunicorn can still import app:app).
+Environment=HOME=/etc/acme-appliance/msp-console
+
+ExecStart=/opt/acme-appliance/venv/bin/gunicorn \
+    --bind 0.0.0.0:9443 \
+    --certfile /etc/acme-appliance/msp-console/tls/console.crt \
+    --keyfile /etc/acme-appliance/msp-console/tls/console.key \
+    --workers 2 \
+    --timeout 90 \
+    app:app
+Restart=on-failure
+RestartSec=5
+
+# ---------------------------------------------------------------------
+# ARCHITECTURE NOTE (clean redesign -- see CHANGES.md for the full
+# history): this profile used to run one dedicated Linux account +
+# systemd instance PER CUSTOMER, with the MSP Console itself needing to
+# `sudo` into per-customer useradd/userdel/systemctl operations to
+# manage them -- that model required a wide ReadWritePaths= grant
+# (including /etc itself, for useradd's own lock files) and forbade
+# NoNewPrivileges=true, since sudo is a setuid-root binary.
+#
+# Under this redesign, there is exactly ONE process for the entire
+# fleet (this one), and every customer's config/certs/logs are just
+# DATA under this SAME account's own directories -- no separate Linux
+# account or systemd unit per customer, and therefore NO sudo call
+# anywhere in msp_console/actions.py anymore. This is a substantial,
+# genuine hardening improvement, not just a simplification: this unit
+# can now use BOTH ProtectSystem=strict (as before) AND
+# NoNewPrivileges=true (newly possible), and ReadWritePaths= only ever
+# needs to list the exact directories this account's own data actually
+# lives under -- never /etc as a whole.
+# ---------------------------------------------------------------------
+ProtectSystem=strict
+ReadWritePaths=/etc/acme-appliance/msp-console /etc/acme-appliance/customers /etc/acme-appliance/offboarded /var/log/acme-appliance /var/lib/acme-appliance /run/acme-appliance
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target

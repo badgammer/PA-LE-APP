@@ -21,10 +21,10 @@ Each item in a domains[].additional_names list may be EITHER:
 
 Example:
     domains:
-      - name: vpn.howardscams.com
-        dns_provider: azure-howardscams        # default for this entry
+      - name: vpn.fabrikam.com
+        dns_provider: azure-fabrikam        # default for this entry
         additional_names:
-          - apex.howardscams.com               # plain string -> uses azure-howardscams
+          - apex.fabrikam.com               # plain string -> uses azure-fabrikam
           - name: portal.otherdomain.com        # dict -> overrides to a different provider
             dns_provider: azure-otherdomain
         cert_name_prefix: gp-portal-cert

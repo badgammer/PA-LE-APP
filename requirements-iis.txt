@@ -1,0 +1,7 @@
+# Only installed under the "single-instance" install profile (see
+# install.sh) -- the msp-panos profile never installs this, so a
+# multi-tenant fleet host that only ever needs PAN-OS carries no WinRM
+# client library at all, and deploy_providers/iis.py's ImportError-guarded
+# import in deploy_providers/__init__.py degrades to "iis type simply
+# unavailable" rather than a hard failure.
+pywinrm>=0.4
