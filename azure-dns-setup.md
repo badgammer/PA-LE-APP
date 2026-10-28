@@ -1,6 +1,6 @@
 # Azure DNS Setup Guide
 
-This guide covers creating and managing a public DNS zone in Microsoft Azure DNS, delegating a domain to Azure, adding records, validating resolution, and preparing Azure DNS for DNS-01 automation such as Let's Encrypt.
+This guide covers creating and managing a public DNS zone in Microsoft Azure DNS using both the Azure portal and Azure CLI, delegating a domain to Azure, adding records, validating resolution, and preparing Azure DNS for DNS-01 automation such as Let's Encrypt.
 
 ## Prerequisites
 
@@ -23,6 +23,164 @@ az account set --subscription "$SUBSCRIPTION_ID"
 ```
 
 > Azure DNS is a global service. The resource group itself still has an Azure region, but public DNS zones are global resources.
+
+## Azure portal (GUI) procedure
+
+Use this procedure if you prefer to configure Azure DNS through the Azure portal instead of the command line.
+
+### 1. Create or select a resource group
+
+1. Sign in to the Azure portal at `https://portal.azure.com`.
+2. In the search bar, enter **Resource groups** and open the service.
+3. To use an existing resource group, select it and continue to the next section.
+4. To create one, select **Create**.
+5. Choose the target **Subscription**.
+6. Enter a **Resource group** name, such as `rg-dns-prod`.
+7. Choose a region for the resource group, such as **Central US**.
+8. Select **Review + create**, then **Create**.
+
+> The resource group has a region, but a public Azure DNS zone is a global resource.
+
+### 2. Create a public DNS zone
+
+1. In the Azure portal search bar, enter **DNS zones**.
+2. Open **DNS zones**, then select **Create**.
+3. On the **Basics** tab, configure:
+   - **Subscription:** the subscription that will own the zone.
+   - **Resource group:** for example, `rg-dns-prod`.
+   - **Name:** the registered domain name, for example `example.com`.
+4. If the zone is a child zone, configure the parent-zone options as required. For a normal registered root domain such as `example.com`, use the standard zone creation flow.
+5. Select **Review + create**.
+6. Confirm validation succeeds, then select **Create**.
+7. Select **Go to resource** after deployment completes.
+
+Azure automatically creates the zone's authoritative SOA and NS record sets.
+
+### 3. Record the Azure-assigned name servers
+
+1. Open the DNS zone.
+2. On **Overview**, locate **Name servers**.
+3. Copy all four Azure-assigned authoritative name servers.
+
+They will resemble the following, but the actual values assigned to your zone will differ:
+
+```text
+ns1-xx.azure-dns.com
+ns2-xx.azure-dns.net
+ns3-xx.azure-dns.org
+ns4-xx.azure-dns.info
+```
+
+Use the exact four values displayed in the portal. Do not substitute the example values above.
+
+### 4. Delegate the registered domain to Azure DNS
+
+This step is completed at the domain registrar, not in the Azure portal.
+
+1. Sign in to the registrar that manages `example.com`.
+2. Open the domain's **Nameservers**, **Name servers**, or **DNS delegation** settings.
+3. Replace the existing authoritative name servers with all four name servers shown on the Azure DNS zone's **Overview** page.
+4. Save the change.
+5. Allow for DNS caching and registrar processing before expecting every recursive resolver to return the new delegation.
+
+Before changing delegation for a production domain, recreate and verify all required DNS records in Azure DNS to avoid an outage.
+
+### 5. Create records in the Azure portal
+
+1. Open **DNS zones** and select `example.com`.
+2. On the DNS zone page, select **+ Record set**.
+3. Enter the record name, type, TTL, and value.
+4. Select **Add** or **OK**, depending on the current portal experience.
+
+#### Example A record
+
+Create `app.example.com`:
+
+- **Name:** `app`
+- **Type:** `A`
+- **TTL:** `300`
+- **TTL unit:** `Seconds`
+- **IP address:** `203.0.113.10`
+
+#### Example CNAME record
+
+Create `www.example.com` as an alias:
+
+- **Name:** `www`
+- **Type:** `CNAME`
+- **TTL:** `300`
+- **Alias:** `app.example.com`
+
+A CNAME cannot coexist with most other record types at the same name. Do not create a CNAME at a name that already has an A, AAAA, TXT, MX, or other conflicting record set.
+
+#### Example TXT record
+
+Create a TXT record for testing or external validation:
+
+- **Name:** `validation`
+- **Type:** `TXT`
+- **TTL:** `300`
+- **Value:** `example-validation-value`
+
+For an ACME DNS-01 challenge, the record name is normally `_acme-challenge`, but the application should create and remove the challenge value automatically.
+
+#### Example MX record
+
+Create an apex MX record:
+
+- **Name:** `@` or leave the name blank if the portal represents the zone apex that way.
+- **Type:** `MX`
+- **TTL:** `3600`
+- **Preference:** `10`
+- **Mail exchange:** `mail.example.com`
+
+Ensure the mail-exchange hostname resolves to the intended mail service. An MX record must point to a hostname, not directly to an IP address.
+
+### 6. Grant the certificate application access through IAM
+
+For the Palo Alto/Let's Encrypt application, assign access to the workload's managed identity or Microsoft Entra service principal at the individual DNS-zone scope.
+
+1. Open **DNS zones** and select `example.com`.
+2. In the zone menu, select **Access control (IAM)**.
+3. Select **Add** > **Add role assignment**.
+4. On the **Role** tab, search for and select **DNS Zone Contributor**.
+5. Select **Next**.
+6. For **Assign access to**, choose the identity category used by the application, typically **Managed identity** or **User, group, or service principal**.
+7. Select **Select members**.
+8. Find and select the application's identity.
+9. Select **Review + assign**, then select **Review + assign** again if prompted.
+10. Return to **Access control (IAM)** > **Role assignments** and confirm the identity is listed with scope limited to this DNS zone.
+
+`DNS Zone Contributor` is a practical built-in role for DNS automation. For stricter production least privilege, evaluate a custom role limited to the record-set actions the integration needs.
+
+### 7. Validate the GUI configuration
+
+In the Azure portal:
+
+1. Reopen the DNS zone and confirm the expected record sets appear.
+2. Open each important record set and verify its TTL and values.
+3. On **Overview**, confirm the assigned name servers match the registrar configuration.
+4. In **Access control (IAM)**, confirm the automation identity has the expected role at zone scope.
+
+From a workstation, verify public DNS separately because a record appearing in the portal does not prove that public delegation is correct:
+
+```bash
+dig example.com NS +short
+dig app.example.com A +short
+dig _acme-challenge.example.com TXT
+```
+
+### 8. Portal troubleshooting
+
+- **Record exists in Azure but is not public:** Compare the registrar's nameservers with the four servers on the zone's **Overview** page.
+- **Old value is returned:** Check the record-set TTL and allow cached responses to expire.
+- **Application receives authorization errors:** Review **Access control (IAM)** > **Role assignments**, the selected identity, and the assignment scope.
+- **Let's Encrypt cannot find the TXT value:** Verify `_acme-challenge` in **Record sets**, then test the authoritative Azure name server directly with `dig`.
+- **Wrong Azure zone is updated:** Confirm the application's subscription ID, resource group, zone name, tenant, and identity configuration.
+
+## Azure CLI procedure
+
+The following sections provide the equivalent command-line workflow.
 
 ## 1. Create the resource group
 
