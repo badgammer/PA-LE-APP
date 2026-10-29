@@ -26,6 +26,41 @@ dns_providers:
       hosted_zone_id: "CHANGE-ME"
       region: "us-east-1"
 
+  godaddy-main:
+    type: godaddy
+    settings:
+      api_key: "CHANGE-ME"        # Production key (or personal access token)
+      api_secret: "CHANGE-ME"     # leave blank when api_key is a personal access token
+      propagation_seconds: 60
+
+  namecheap-main:
+    type: namecheap
+    settings:
+      api_user: "CHANGE-ME"
+      api_key: "CHANGE-ME"
+      client_ip: "203.0.113.10"   # this appliance's public IPv4, whitelisted in Namecheap
+      propagation_seconds: 90
+
+  internal-bind:
+    type: rfc2136
+    settings:
+      server: "10.0.0.53"
+      key_name: "acme-key"
+      key_secret: "CHANGE-ME-BASE64"
+      key_algorithm: "hmac-sha256"
+      zone: "corp.example.com"    # optional; found via SOA when omitted
+      propagation_seconds: 10
+
+  # Network Solutions (or any DNS host with no API): the customer's
+  # _acme-challenge.<name> is CNAMEd to <name-with-dashes>.<target_zone>,
+  # and TXT records are written to target_zone via another instance below.
+  netsol-customer:
+    type: network_solutions
+    settings:
+      target_provider: "azure-contoso"
+      target_zone: "acme.contoso.com"
+      propagation_seconds: 45
+
   internal-dns-shim:
     type: generic_webhook
     settings:

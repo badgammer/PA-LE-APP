@@ -1,4 +1,6 @@
 requests>=2.31
+# rfc2136 DNS provider (TSIG dynamic updates) and cname_alias CNAME verification:
+dnspython>=2.4
 PyYAML>=6.0
 # Only needed if you use the route53 DNS provider:
 boto3>=1.34

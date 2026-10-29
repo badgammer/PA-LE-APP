@@ -27,6 +27,9 @@
     <input type="text" value="{{ provider_fields[selected_type].label }}" readonly>
     {% endif %}
     <h2>{{ provider_fields[selected_type].label }} settings</h2>
+    {% if provider_fields[selected_type].get("note") %}
+      <p style="font-size:0.9em; opacity:0.85;">{{ provider_fields[selected_type].note }}</p>
+    {% endif %}
     {% for field in provider_fields[selected_type].fields %}
       {% if field.type == "checkbox" %}
         <div class="checkbox-row">
@@ -45,6 +48,7 @@
             value="{{ existing_settings.get(field.name, field.get('default', '')) }}"
           {% endif %}
           {% if field.get("required") and not (mode == "edit" and field.get("secret")) %}required{% endif %}>
+        {% if field.get("help") %}<small style="display:block; opacity:0.8;">{{ field.help }}</small>{% endif %}
       {% endif %}
     {% endfor %}
     <div class="form-actions">

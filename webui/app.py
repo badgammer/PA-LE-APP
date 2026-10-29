@@ -636,7 +636,7 @@ def dns_provider_test(instance_name):
     instance = cfg["dns_providers"].get(instance_name)
     if not instance:
         abort(404)
-    ok, message = test_connections.test_dns_provider(instance["type"], instance.get("settings", {}))
+    ok, message = test_connections.test_dns_provider(instance["type"], instance.get("settings", {}), instances=cfg["dns_providers"])
     if ok is True:
         flash(f"'{instance_name}': {message}", "success")
     elif ok is False:

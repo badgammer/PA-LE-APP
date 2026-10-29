@@ -1,3 +1,61 @@
+# Change Tree -- New DNS Providers: GoDaddy, Namecheap, RFC 2136, Network Solutions
+
+#### + New files
+dns_providers/godaddy.py       GoDaddy Domains API v1. sso-key or personal access token. Read-merge-PUT for TXT so two tokens at one name survive; DELETE only when empty.
+dns_providers/namecheap.py     Namecheap XML API. getList/getHosts/setHosts with the whole zone written back under a per-domain file lock; refuses domains not on Namecheap DNS; preserves MX pref/TTL.
+dns_providers/rfc2136.py       TSIG dynamic updates (dnspython) over TCP; zone auto-detected via SOA or set explicitly; test button does a real add/remove probe record.
+dns_providers/cname_alias.py   CNAME delegation provider, registered as both `network_solutions` and `cname_alias`. Verifies the customer's CNAME, then writes the TXT into a zone on another configured provider.
+tests/test_new_dns_providers.py  17 tests (fakes for GoDaddy/Namecheap, a local TSIG DNS server for RFC 2136, alias verification).
+
+#### ~ Modified files
+dns_providers/__init__.py      Registers the 5 new types + form fields; get_provider(..., instances=) passes all dns_providers[] to alias types.
+dns_providers/base.py          candidate_zones() and relative_name() helpers.
+dns_dispatcher.py              Passes cfg["dns_providers"] so alias types can reach their target provider.
+webui/test_connections.py, webui/app.py, msp_console/app.py   Test button passes instances= (alias types test their target provider too).
+webui/config_store.py          dns_provider_in_use() also blocks deleting a provider that is an alias's target_provider.
+webui/templates/dns_provider_form.html, msp_console/templates/customer_dns_provider_form.html   Optional provider `note` and per-field `help` text.
+requirements-core.txt          + dnspython>=2.4
+config/appliance.yaml.example, README.md   Examples and a supported-providers / CNAME delegation section.
+
+NOTE: Network Solutions has no DNS-record API that ACME clients can use, so it is
+supported through CNAME delegation, not direct API calls.
+
+
+# Change Tree -- Standalone Is the Default Install; MSP Requires `--msp`
+
+Baseline: this same repo (clean-redesign MSP Console release). Previously
+`install.sh` prompted interactively for a profile, and unattended callers
+had to pass `--profile=... --non-interactive`. Now a plain install is the
+STANDALONE (single-instance) appliance, and the MSP build is only installed
+when the `--msp` modifier is added.
+
+#### ~ Modified files
+install.sh
+  - No flag -> `single-instance`, with no prompt (the interactive
+    `read -rp` menu is gone entirely).
+  - New `--msp` modifier -> `msp-panos`. `--profile=single-instance|msp-panos`
+    still works as a long form. Contradictory flags (e.g. `--msp
+    --profile=single-instance`) are rejected rather than last-one-wins.
+  - `--non-interactive` is still accepted (so existing kickstart/Packer/
+    automation keeps working) but is now a no-op.
+  - Re-running with NO flag on an already-installed host reuses the profile
+    recorded in /etc/acme-appliance/profile instead of falling back to the
+    standalone default, so updating an MSP host does not trip the
+    profile-mismatch guard. An explicit flag that names a different profile
+    than the marker still errors, exactly as before.
+iso-build/bootstrap-appliance.sh
+  - Recognizes `--msp`, `--profile=...` and `--non-interactive` directly
+    (no `--` separator needed) and forwards them to install.sh. The old
+    `-- <install.sh args>` form still works. Unknown `-*` options now fail
+    fast instead of being treated as a source path.
+iso-build/ks.cfg
+  - %post no longer passes `--profile=single-instance --non-interactive`;
+    the default already produces the same standalone build.
+bin/msp-provision-customer.sh   Error hint now says `install.sh --msp`.
+README.md, iso-build/README.md, docs/MSP-CONSOLE-INTEGRATION.md
+  - Install instructions updated to "default = standalone, add --msp for MSP".
+
+
 # Change Tree -- Multi-Target Deploy Provider Rebuild
 
 Baseline: `PA-LE-APP-Beta_Release.zip` (the uploaded beta with cross-zone

@@ -95,7 +95,7 @@ mechanism / scriptable alternative. Suggested addition:
 ```markdown
 ### MSP Console dashboard
 
-Once a host is installed with `--profile=msp-panos`, the primary way to
+Once a host is installed with `--msp` (i.e. `--profile=msp-panos`), the primary way to
 manage the fleet is the MSP Console at `https://<host>:9443/` -- first
 visit prompts you to create the initial owner account. From there you
 can:

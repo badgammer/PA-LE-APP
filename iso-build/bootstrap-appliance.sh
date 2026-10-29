@@ -3,8 +3,8 @@
 # One-shot OS-level provisioning script: turns a freshly-installed,
 # internet-connected Rocky Linux 9 (minimal) box into a box that HAS the
 # appliance code and its prerequisites installed at /opt/acme-appliance --
-# but does NOT itself decide which install profile (single-instance vs.
-# msp-panos) to run. That decision, and everything profile-specific
+# but does NOT itself decide which install profile (standalone/single-instance
+# by default, or msp-panos when --msp is given) to run. That decision, and everything profile-specific
 # (systemd units, service account(s)/DynamicUser, config seeding, TLS
 # cert, sudoers, firewalld) is handled by install.sh, which this script
 # calls at the very end.
@@ -12,14 +12,20 @@
 # It is idempotent -- safe to re-run if a step fails partway through.
 #
 # Usage (as root):
-#   ./bootstrap-appliance.sh [/path/to/acme-appliance-source] [-- <install.sh args>]
+#   ./bootstrap-appliance.sh [/path/to/acme-appliance-source] [--msp]
 #
 # Examples:
 #   ./bootstrap-appliance.sh
-#     -> copies source, installs OS packages, then runs install.sh with
-#        an interactive profile prompt.
-#   ./bootstrap-appliance.sh /tmp/acme-appliance-src -- --profile=msp-panos --non-interactive
-#     -> same, but installs (in the msp-panos profile) with no prompts.
+#     -> copies source, installs OS packages, then installs the STANDALONE
+#        (single-instance) appliance. This is the default -- no prompt.
+#   ./bootstrap-appliance.sh --msp
+#     -> same, but installs the MSP (multi-tenant, msp-panos) build instead.
+#   ./bootstrap-appliance.sh /tmp/acme-appliance-src --msp
+#     -> same as above, with an explicit source path.
+#
+# Backward-compatible long forms still work, including the old "--"
+# separator that forwards everything after it verbatim to install.sh:
+#   ./bootstrap-appliance.sh . -- --profile=msp-panos --non-interactive
 
 set -euo pipefail
 
@@ -30,8 +36,13 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Split args at "--": everything before is the optional source path,
-# everything after is forwarded verbatim to install.sh.
+# Argument handling:
+#   - --msp, --profile=..., and --non-interactive are recognized anywhere
+#     and forwarded to install.sh (so "bootstrap-appliance.sh --msp" just
+#     works, with no need for a "--" separator).
+#   - The first other argument (if any) is the optional source path.
+#   - Everything after a literal "--" is forwarded verbatim to install.sh
+#     (the original calling convention, kept for existing automation).
 SRC_DIR=""
 INSTALL_ARGS=()
 SEEN_DASHDASH=false
@@ -42,9 +53,13 @@ for arg in "$@"; do
   fi
   if $SEEN_DASHDASH; then
     INSTALL_ARGS+=("$arg")
-  elif [ -z "$SRC_DIR" ]; then
-    SRC_DIR="$arg"
+    continue
   fi
+  case "$arg" in
+    --msp|--profile=*|--non-interactive) INSTALL_ARGS+=("$arg") ;;
+    -*) echo "Unknown argument: $arg (supported: --msp, or a source path)" >&2; exit 1 ;;
+    *) if [ -z "$SRC_DIR" ]; then SRC_DIR="$arg"; fi ;;
+  esac
 done
 SRC_DIR="${SRC_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
@@ -193,6 +208,6 @@ chmod +x "$INSTALL_DIR"/bin/*.sh \
          "$INSTALL_DIR"/deploy_certificate.py
 
 log ""
-log "OS-level setup complete. Handing off to install.sh for profile-specific setup..."
+log "OS-level setup complete. Handing off to install.sh for profile-specific setup (standalone unless --msp was given)..."
 log ""
 exec "$INSTALL_DIR/install.sh" "${INSTALL_ARGS[@]}"

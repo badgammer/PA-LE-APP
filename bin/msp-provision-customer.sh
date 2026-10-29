@@ -59,7 +59,7 @@ CUSTOMER_LOG_FILE="/var/log/acme-appliance/customers/$SLUG.log"
 
 if [[ ! -f /etc/acme-appliance/profile ]] || [[ "$(cat /etc/acme-appliance/profile)" != "msp-panos" ]]; then
     echo "ERROR: this host was not installed with the msp-panos profile (see /etc/acme-appliance/profile)." >&2
-    echo "       Run install.sh --profile=msp-panos first." >&2
+    echo "       Run install.sh --msp first." >&2
     exit 1
 fi
 

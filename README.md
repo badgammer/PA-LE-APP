@@ -20,8 +20,9 @@ never log in -- see [Running the msp-panos profile](#running-the-msp-panos-profi
 ## Install profiles
 
 Rather than maintaining this as two forked codebases, `install.sh` at
-the repo root asks (or is told via `--profile=`) which of two profiles
-to configure -- the application code, plugin registries, and templates
+the repo root installs the **standalone (`single-instance`) build by
+default** and only installs the MSP build (`msp-panos`) when you add the
+`--msp` modifier. The application code, plugin registries, and templates
 are 100% identical either way; only what gets *enabled* differs:
 
 | | `single-instance` | `msp-panos` |
@@ -36,10 +37,16 @@ are 100% identical either way; only what gets *enabled* differs:
 | Let's Encrypt rate-limit isolation | one certbot `--config-dir` for the whole appliance | each customer namespace still gets its OWN certbot `--config-dir` -- rate-limit accounting is isolated per customer even though there's only one process |
 
 ```bash
-sudo ./install.sh                          # interactive prompt
-sudo ./install.sh --profile=single-instance
-sudo ./install.sh --profile=msp-panos
+sudo ./install.sh          # standalone (single-instance) -- the default, no prompt
+sudo ./install.sh --msp    # MSP (msp-panos) build
 ```
+
+`--profile=single-instance` and `--profile=msp-panos` are still accepted
+as long forms for existing automation, and `--non-interactive` is still
+accepted but no longer has any effect (nothing prompts anymore).
+Re-running `install.sh` with no flag on an already-installed host reuses
+that host's existing profile, so updating an MSP host never requires
+remembering to pass `--msp` again.
 
 `install.sh` refuses to switch an already-provisioned host from one
 profile to the other -- the directory/config models differ enough that
@@ -313,16 +320,15 @@ cd /tmp/acme-appliance-src
 `iso-build/bootstrap-appliance.sh` handles the rest of OS-level prep
 (packages, copying this repo's code to `/opt/acme-appliance`, creating
 the Python venv) and then hands off to `install.sh` for the
-profile-specific setup covered above -- by default it will prompt you
-interactively for a profile, or you can pass one straight through:
+profile-specific setup covered above. With no flag it installs the
+**standalone** appliance; add `--msp` for the MSP build:
 
 ```bash
-# Interactive profile prompt:
+# Standalone (default):
 sudo bash ./iso-build/bootstrap-appliance.sh
 
-# Or non-interactive, e.g. for automation:
-sudo bash ./iso-build/bootstrap-appliance.sh . -- --profile=single-instance --non-interactive
-sudo bash ./iso-build/bootstrap-appliance.sh . -- --profile=msp-panos --non-interactive
+# MSP build:
+sudo bash ./iso-build/bootstrap-appliance.sh --msp
 ```
 
 If the appliance code is already deployed to `/opt/acme-appliance` (e.g.
@@ -334,7 +340,7 @@ image build options.
 
 ## Running the msp-panos profile
 
-Once a host is installed with `--profile=msp-panos`, **only your MSP
+Once a host is installed with `--msp` (i.e. `--profile=msp-panos`), **only your MSP
 staff log in** -- there is one shared web UI, the **MSP Console**, at
 `https://<host>:9443/`. Customers never get their own login or their
 own URL; every customer is managed as a data namespace from within this
@@ -406,10 +412,42 @@ cd /opt/acme-appliance && git pull
 sudo systemctl restart acme-msp-console.service
 ```
 
+## Supported DNS providers
+
+| Type | Use it for | Notes |
+|---|---|---|
+| `azure` | Azure DNS | Service principal |
+| `cloudflare` | Cloudflare | API token |
+| `route53` | AWS Route 53 | Keys or instance role |
+| `godaddy` | Domains on GoDaddy nameservers | Production API key + secret, or a personal access token. Reads the current TXT values and writes back the merged list, so wildcard + apex certificates don't clobber each other. |
+| `namecheap` | Domains on Namecheap's own DNS | API access on, **this appliance's public IPv4 whitelisted** (IPv4 only, max 20), and `client_ip` set to it. Namecheap's API has no single-record call, so each change reads the whole zone and writes it back (under a lock). Not recommended for domains that use Namecheap email forwarding / Private Email -- use a CNAME delegation instead. |
+| `rfc2136` | BIND, PowerDNS, Knot, Infoblox, other TSIG-capable servers | TSIG-signed dynamic updates over TCP. Windows DNS secure-only zones (GSS-TSIG) are **not** supported. Scope the key to `_acme-challenge` TXT records. |
+| `network_solutions` | Network Solutions | No usable DNS-record API exists for ACME clients, so this uses CNAME delegation (below). |
+| `cname_alias` | Any DNS host with no API | Same mechanism as `network_solutions`. |
+| `generic_webhook` | Anything with a REST endpoint | You supply add/remove URLs |
+
+### CNAME delegation (`network_solutions`, `cname_alias`)
+
+For a DNS host the appliance can't automate, the customer (or you, in their console) creates **one CNAME per validated name, once**:
+
+```
+_acme-challenge.customer.org   CNAME   customer-org.acme.example.net
+```
+
+`acme.example.net` is a zone **you** host on a provider that has an API (e.g. an `azure` instance). Let's Encrypt follows the CNAME, and the appliance writes each challenge TXT into `acme.example.net` through that other provider. Renewals are then fully automatic and the appliance never holds credentials for the customer's own zone.
+
+- Create the DNS provider instance for the target zone first (e.g. `azure-acme`), then add a `network_solutions` instance with `target_provider: azure-acme` and `target_zone: acme.example.net`.
+- The CNAME target is the validated name with dots turned into dashes (`www.customer.org` -> `www-customer-org`), so a wildcard and its apex share one CNAME; every extra SAN needs its own.
+- Before writing anything the appliance checks the CNAME exists and points at the right target, and fails with the exact record to create if not. Set `verify_cname: false` to skip the check.
+- A provider that is another alias's `target_provider` cannot be deleted until the alias is removed.
+- For Network Solutions the CNAME goes in the Advanced DNS Manager for the domain (domain must be on Network Solutions' nameservers).
+
 ## Adding a new DNS provider
 
-1. Create `dns_providers/<name>.py` implementing `add_txt_record` / `remove_txt_record` from `base.py`.
-2. Register it in `dns_providers/__init__.py`'s `PROVIDER_TYPES` and `PROVIDER_FIELDS`.
+1. Create `dns_providers/<name>.py` implementing `add_txt_record` / `remove_txt_record` from `base.py`
+   (`base.candidate_zones()` / `relative_name()` help providers that need the exact zone).
+2. Register it in `dns_providers/__init__.py`'s `PROVIDER_TYPES` and `PROVIDER_FIELDS`
+   (`note` shows help under the form heading; a field's `help` shows under that input).
 3. Restart the web UI: `systemctl restart acme-webui.service` (single-instance)
    or `systemctl restart acme-msp-console.service` (msp-panos -- restarts
    the one shared process, picking up the change for every customer at once).

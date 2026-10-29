@@ -88,7 +88,7 @@ def main():
     provider_settings = instance_cfg.get("settings", {})
 
     try:
-        provider = get_provider(provider_type, provider_settings)
+        provider = get_provider(provider_type, provider_settings, instances=cfg["dns_providers"])
         if action == "add":
             log.info("Adding TXT %s via provider instance=%s (type=%s)", fqdn, instance_name, provider_type)
             provider.add_txt_record(fqdn, validation)

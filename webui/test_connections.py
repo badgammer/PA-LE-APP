@@ -13,9 +13,9 @@ from dns_providers import get_provider as get_dns_provider, DnsProviderError  # 
 from deploy_providers import get_provider as get_deploy_provider, DeployProviderError  # noqa: E402
 
 
-def test_dns_provider(provider_type: str, settings: dict):
+def test_dns_provider(provider_type: str, settings: dict, instances: dict = None):
     try:
-        provider = get_dns_provider(provider_type, settings)
+        provider = get_dns_provider(provider_type, settings, instances=instances)
         message = provider.test_connection()
         return True, message
     except NotImplementedError as exc:

@@ -23,22 +23,20 @@ sudo dnf install -y git
 git clone https://github.com/badgammer/PA-LE-APP /tmp/acme-appliance-src
 cd /tmp/acme-appliance-src
 
-# Prompts interactively for a profile:
+# Standalone (single-instance) -- the default, no prompt:
 sudo bash ./iso-build/bootstrap-appliance.sh
 
-# Or specify one up front (useful for kickstart/Packer/unattended builds):
-sudo bash ./iso-build/bootstrap-appliance.sh . -- --profile=single-instance --non-interactive
+# MSP (multi-tenant) build -- only when you add --msp:
+sudo bash ./iso-build/bootstrap-appliance.sh --msp
 ```
 
 The unattended kickstart (`ks.cfg`) and Packer template (`appliance.pkr.hcl`)
-in this directory build the **single-instance** profile by default (the
-kickstart's `%post` section calls `bootstrap-appliance.sh` with
-`--profile=single-instance --non-interactive` explicitly -- %post runs
-completely unattended with no TTY, so a profile MUST be passed rather
-than relying on the interactive prompt, which would otherwise hang the
-build forever). Change that to `--profile=msp-panos` in `ks.cfg` if
-you're imaging an MSP fleet host instead. See the main README for what
-each profile changes.
+in this directory build the **standalone** appliance (the kickstart's
+`%post` section calls `bootstrap-appliance.sh` with no profile flag, and
+`install.sh` defaults to standalone and never prompts, so nothing can hang
+an unattended build). To image an MSP fleet host instead, add `--msp` to
+that command in `ks.cfg`. See the main README for what each profile
+changes.
 
 ## After first boot
 
