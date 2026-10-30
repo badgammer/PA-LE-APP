@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Notifications{% endblock %}
+{% block content %}
+<h1>Notifications</h1>
+<p class="helptext">Get an email when a certificate is about to expire or a renewal, DNS challenge or deployment fails.</p>
+{% set mode = "standalone" %}
+{% set can_write = True %}
+{% set allow_inherit = False %}
+{% include "_notification_form.html" %}
+{% endblock %}

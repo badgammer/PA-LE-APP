@@ -33,6 +33,7 @@ from dns_providers import PROVIDER_FIELDS  # noqa: E402
 from deploy_providers import INSTANCE_FIELDS, TARGET_FIELDS  # noqa: E402
 from cert_naming import safe_cert_name  # noqa: E402
 import domain_logic  # noqa: E402
+import notifications  # noqa: E402
 
 APPLIANCE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -815,6 +816,59 @@ def system_reboot():
     finally:
         password = None  # noqa: F841
     return redirect(url_for("system_page"))
+
+
+# ------------------------------------------------------------ notifications (email alerting)
+
+def _notif_result(action: str, settings: dict, label: str = ""):
+    """Run the Test connection / Send test email buttons. Returns (ok, message); never raises."""
+    try:
+        if action == "test_connection":
+            return True, notifications.test_connection(settings)
+        if action == "send_test":
+            return True, notifications.send_test_email(settings, label=label)
+        return False, "Unknown action."
+    except notifications.NotificationError as exc:
+        return False, str(exc)
+    except Exception as exc:  # noqa: BLE001
+        return False, f"Unexpected error: {exc}"
+
+
+@app.route("/notifications", methods=["GET", "POST"])
+@login_required
+def notifications_page():
+    cfg = store.load_config()
+    current = notifications.get_config(cfg)
+    settings = current
+    if request.method == "POST":
+        check_csrf()
+        settings = notifications.settings_from_form(request.form, current)
+        errors = notifications.validate(settings)
+        if errors:
+            for message in errors:
+                flash(message, "error")
+        else:
+            cfg["notifications"] = settings
+            store.save_config(cfg)
+            _appliance_log(f"notification settings updated by '{current_user()}'")
+            flash("Notification settings saved.", "success")
+            return redirect(url_for("notifications_page"))
+    return render_template(
+        "notifications.html", s=settings, events=notifications.ui_events(),
+        test_url=url_for("notifications_test"),
+    )
+
+
+@app.route("/notifications/test", methods=["POST"])
+@login_required
+def notifications_test():
+    """JSON endpoint for the Test connection / Send test email buttons. Uses the values currently typed in the
+    form (blank secret fields fall back to the saved ones) and saves nothing."""
+    check_csrf()
+    current = notifications.get_config(store.load_config())
+    settings = notifications.settings_from_form(request.form, current)
+    ok, message = _notif_result(request.form.get("action", ""), settings)
+    return jsonify({"ok": ok, "message": message})
 
 
 @app.route("/account", methods=["GET", "POST"])

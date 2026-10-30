@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Notifications -- MSP-wide sender{% endblock %}
+{% block content %}
+<h1>Notifications: MSP-wide sender</h1>
+<p class="helptext">One mail sender shared by every customer that chooses "Use the MSP-wide sender". Recipients and alert choices are set per customer.</p>
+{% set mode = "fleet" %}
+{% set can_write = True %}
+{% set allow_inherit = False %}
+{% include "_notification_form.html" %}
+{% endblock %}

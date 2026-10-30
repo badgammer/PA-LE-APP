@@ -33,6 +33,14 @@ CONFIG="${ACME_APPLIANCE_CONFIG:-/etc/acme-appliance/appliance.yaml}"
 LOG="${ACME_APPLIANCE_LOG:-/var/log/acme-appliance.log}"
 LE_CONFIG_DIR="${ACME_APPLIANCE_LE_CONFIG_DIR:-/etc/acme-appliance/letsencrypt}"
 
+# Prefer the appliance's own virtualenv (see the same block in acme-renew.sh): the deploy
+# providers (pywinrm for IIS) live there, not in the system Python.
+if [ -x "$APPLIANCE_DIR/venv/bin/python" ]; then
+  PYTHON="$APPLIANCE_DIR/venv/bin/python"
+else
+  PYTHON="python3"
+fi
+
 log() { echo "$(date -u +'%Y-%m-%dT%H:%M:%SZ') redeploy-cert.sh: $*" | tee -a "$LOG"; }
 
 DOMAIN="${1:-}"
@@ -51,7 +59,7 @@ fi
 # deliberately do NOT also match on additional_names here the way
 # acme-renew.sh's single-domain mode does; the web UI always passes the
 # entry's primary name).
-KNOWN=$(python3 -c "
+KNOWN=$("$PYTHON" -c "
 import yaml
 cfg = yaml.safe_load(open('$CONFIG'))
 target = '$DOMAIN'
@@ -62,7 +70,7 @@ if [ "$KNOWN" != "yes" ]; then
   exit 1
 fi
 
-SAFE_NAME=$(python3 -c "
+SAFE_NAME=$("$PYTHON" -c "
 import sys
 sys.path.insert(0, '$APPLIANCE_DIR')
 from cert_naming import safe_cert_name
@@ -80,8 +88,11 @@ fi
 log "Redeploying existing certificate for '$DOMAIN' from $LINEAGE_DIR"
 log "(no new ACME issuance -- this does not use any Let's Encrypt rate-limit headroom)"
 
+# ACME_APPLIANCE_REDEPLOY=1 tells deploy_certificate.py this is NOT a fresh issuance, so it does
+# not send a "certificate renewed" email (it still sends the deploy success/failure alerts).
 if RENEWED_LINEAGE="$LINEAGE_DIR" RENEWED_DOMAINS="$DOMAIN" ACME_APPLIANCE_CONFIG="$CONFIG" \
-    python3 "$APPLIANCE_DIR/deploy_certificate.py" 2>&1 | tee -a "$LOG"; then
+    ACME_APPLIANCE_REDEPLOY=1 \
+    "$PYTHON" "$APPLIANCE_DIR/deploy_certificate.py" 2>&1 | tee -a "$LOG"; then
   log "OK: redeployed '$DOMAIN' to its configured deploy target(s)"
 else
   log "FAILED: redeploy of '$DOMAIN' (see output above; full deploy log entries are also in $LOG)"

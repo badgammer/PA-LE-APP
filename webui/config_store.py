@@ -207,10 +207,4 @@ def deploy_provider_in_use(cfg: dict, name: str) -> list:
             if t.get("target") == name:
                 used.append(d["name"])
                 break
-    # CNAME-alias providers (network_solutions / cname_alias) write their TXT
-    # records THROUGH another instance, so that target can't be deleted either.
-    for alias_name, inst in cfg.get("dns_providers", {}).items():
-        if inst.get("type") in ("network_solutions", "cname_alias") \
-                and inst.get("settings", {}).get("target_provider") == instance_name:
-            used.append(f"DNS provider alias '{alias_name}'")
     return used

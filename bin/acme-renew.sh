@@ -25,6 +25,18 @@ set -euo pipefail
 
 APPLIANCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="${ACME_APPLIANCE_CONFIG:-/etc/acme-appliance/appliance.yaml}"
+
+# Use the appliance's own virtualenv Python for everything below -- INCLUDING the
+# certbot hooks -- when it exists. The hooks used to run under whatever bare
+# "python3" is first on PATH (the system Python), which does not have the
+# packages that live only in the venv (dnspython for the rfc2136 / cname_alias DNS
+# providers, boto3 for route53, pywinrm for IIS). Falls back to python3 on a host
+# with no venv.
+if [ -x "$APPLIANCE_DIR/venv/bin/python" ]; then
+  PYTHON="$APPLIANCE_DIR/venv/bin/python"
+else
+  PYTHON="python3"
+fi
 LOG="${ACME_APPLIANCE_LOG:-/var/log/acme-appliance.log}"
 
 LE_CONFIG_DIR="${ACME_APPLIANCE_LE_CONFIG_DIR:-/etc/acme-appliance/letsencrypt}"
@@ -41,6 +53,13 @@ for arg in "$@"; do
 done
 
 log() { echo "$(date -u +'%Y-%m-%dT%H:%M:%SZ') acme-renew.sh: $*" | tee -a "$LOG"; }
+
+# Email alert for a failed renewal (see docs/NOTIFICATIONS.md). Best effort: this can
+# never fail the renewal run, and it sends nothing unless alerts are enabled on the
+# Notifications page.
+notify() {
+  "$PYTHON" "$APPLIANCE_DIR/bin/acme-notify.py" event "$@" --config "$CONFIG" >> "$LOG" 2>&1 || true
+}
 
 if [ ! -f "$CONFIG" ]; then
   log "ERROR: config not found at $CONFIG"
@@ -72,8 +91,8 @@ for dir in "$LE_CONFIG_DIR" "$LE_WORK_DIR" "$LE_LOGS_DIR"; do
   rm -f /tmp/acme-renew-mkdir-err.$$
 done
 
-EMAIL=$(python3 -c "import yaml,sys; print(yaml.safe_load(open('$CONFIG'))['acme']['email'])")
-SERVER=$(python3 -c "import yaml,sys; print(yaml.safe_load(open('$CONFIG'))['acme']['server'])")
+EMAIL=$("$PYTHON" -c "import yaml,sys; print(yaml.safe_load(open('$CONFIG'))['acme']['email'])")
+SERVER=$("$PYTHON" -c "import yaml,sys; print(yaml.safe_load(open('$CONFIG'))['acme']['server'])")
 
 if [ -z "$EMAIL" ] || [[ "$EMAIL" == *"@example.com" ]] || [[ "$EMAIL" == *"@example.org" ]] || [[ "$EMAIL" == *"@example.net" ]]; then
   log "ERROR: acme.email in $CONFIG is not set to a real address (currently: '$EMAIL')."
@@ -83,7 +102,7 @@ if [ -z "$EMAIL" ] || [[ "$EMAIL" == *"@example.com" ]] || [[ "$EMAIL" == *"@exa
   exit 1
 fi
 
-ALL_ENTRIES=$(python3 -c "
+ALL_ENTRIES=$("$PYTHON" -c "
 import sys
 sys.path.insert(0, '$APPLIANCE_DIR')
 import yaml
@@ -94,7 +113,7 @@ for d in cfg.get('domains', []):
 ")
 
 if [ -n "$ONLY_DOMAIN" ]; then
-  RESOLVED=$(python3 -c "
+  RESOLVED=$("$PYTHON" -c "
 import sys
 sys.path.insert(0, '$APPLIANCE_DIR')
 import yaml
@@ -122,6 +141,10 @@ if [ -z "$ENTRIES" ]; then
   exit 0
 fi
 
+# certbot's output for the entry being processed, kept so a failure alert can include it.
+CERTBOT_OUT="$(mktemp "${TMPDIR:-/tmp}/acme-renew-certbot.XXXXXX")"
+trap 'rm -f "$CERTBOT_OUT"' EXIT
+
 FAILURES=0
 while IFS=$'\t' read -r CERT_NAME ENTRY_NAME NAME_LIST; do
   [ -z "$ENTRY_NAME" ] && continue
@@ -132,25 +155,27 @@ while IFS=$'\t' read -r CERT_NAME ENTRY_NAME NAME_LIST; do
   done
 
   log "Processing $ENTRY_NAME (cert-name: $CERT_NAME, names: $NAME_LIST)"
+  : > "$CERTBOT_OUT"
   if ACME_APPLIANCE_CONFIG="$CONFIG" certbot certonly \
       --non-interactive --agree-tos \
       --email "$EMAIL" \
       --server "$SERVER" \
       --preferred-challenges dns \
       --manual $IP_LOGGING_FLAG \
-      --manual-auth-hook "$APPLIANCE_DIR/dns_dispatcher.py add" \
-      --manual-cleanup-hook "$APPLIANCE_DIR/dns_dispatcher.py remove" \
-      --deploy-hook "$APPLIANCE_DIR/deploy_certificate.py" \
+      --manual-auth-hook "$PYTHON $APPLIANCE_DIR/dns_dispatcher.py add" \
+      --manual-cleanup-hook "$PYTHON $APPLIANCE_DIR/dns_dispatcher.py remove" \
+      --deploy-hook "$PYTHON $APPLIANCE_DIR/deploy_certificate.py" \
       --config-dir "$LE_CONFIG_DIR" \
       --work-dir "$LE_WORK_DIR" \
       --logs-dir "$LE_LOGS_DIR" \
       --cert-name "$CERT_NAME" \
       $FORCE_FLAG \
-      "${DOMAIN_ARGS[@]}" 2>&1 | tee -a "$LOG"; then
+      "${DOMAIN_ARGS[@]}" 2>&1 | tee -a "$LOG" "$CERTBOT_OUT"; then
     log "OK: $ENTRY_NAME"
   else
     log "FAILED: $ENTRY_NAME (certbot output above; full log also at $LE_LOGS_DIR/letsencrypt.log)"
     FAILURES=$((FAILURES + 1))
+    notify renewal_failed --domain "$ENTRY_NAME" --detail-file "$CERTBOT_OUT"
   fi
 done <<< "$ENTRIES"
 

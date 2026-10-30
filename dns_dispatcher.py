@@ -21,6 +21,20 @@ logging.basicConfig(
 log = logging.getLogger("dns_dispatcher")
 
 
+def _alert_dns_failure(domain: str, action: str, fqdn: str, instance_name: str, provider_type: str, exc) -> None:
+    """Email a DNS-failure alert if notifications are enabled. Must never break (or slow) the challenge flow
+    beyond its own send timeout, so every error is swallowed."""
+    try:
+        import notifications  # imported lazily: a problem in the alert code can't stop DNS validation
+        notifications.notify_event(
+            "dns_failure", domain,
+            f"Action: {action} TXT record\nRecord: {fqdn}\nProvider: {instance_name} ({provider_type})\n\n{exc}",
+            config_path=CONFIG_PATH,
+        )
+    except Exception:  # noqa: BLE001
+        log.exception("Could not send DNS failure notification")
+
+
 def load_config():
     with open(CONFIG_PATH, "r") as f:
         return yaml.safe_load(f)
@@ -100,6 +114,7 @@ def main():
             provider.remove_txt_record(fqdn, validation)
     except DnsProviderError as exc:
         log.error("DNS provider error: %s", exc)
+        _alert_dns_failure(domain, action, fqdn, instance_name, provider_type, exc)
         raise SystemExit(1)
 
 

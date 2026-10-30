@@ -15,6 +15,7 @@
     <a href="{{ url_for('customers_list') }}">Customers</a>
     {% if current_user_is_owner %}
     <a href="{{ url_for('admins_list') }}">Admins</a>
+    <a href="{{ url_for('fleet_notifications') }}">Notifications</a>
     {% endif %}
     <a href="{{ url_for('account') }}">{{ current_user }}</a>
     <a href="{{ url_for('logout') }}">Log out</a>

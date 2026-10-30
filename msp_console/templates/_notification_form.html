@@ -1,0 +1,181 @@
+{#
+  Shared Notifications form. Included by:
+    webui/templates/notifications.html                  (mode = "standalone")
+    msp_console/templates/customer_notifications.html   (mode = "customer", allow_inherit)
+    msp_console/templates/fleet_notifications.html      (mode = "fleet" -- sender settings only)
+  This file is byte-for-byte identical in webui/templates/ and msp_console/templates/.
+#}
+<form method="post" id="notif-form" autocomplete="off">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+  {% if mode != "fleet" %}
+  <div class="card">
+    <h2>Email alerts</h2>
+    <div class="checkbox-row">
+      <input type="checkbox" id="enabled" name="enabled" {% if s.enabled %}checked{% endif %} {% if not can_write %}disabled{% endif %}>
+      <label for="enabled" style="margin:0;">Send email alerts</label>
+    </div>
+    <label for="recipients">Recipients</label>
+    <textarea id="recipients" name="recipients" rows="2" placeholder="netops@example.com, oncall@example.com">{{ s.recipients|join(", ") }}</textarea>
+    <p class="helptext">Separate addresses with commas, semicolons or new lines.</p>
+    <label for="subject_prefix">Subject prefix</label>
+    <input type="text" id="subject_prefix" name="subject_prefix" value="{{ s.subject_prefix }}" maxlength="40">
+  </div>
+  {% else %}
+  <div class="card">
+    <h2>MSP-wide sender</h2>
+    <p class="helptext">Configured once here, then used by every customer that is set to "Use the MSP-wide sender".
+    Customers keep their own recipients and alert choices. The secret is stored on this host only (file mode 0600).</p>
+    <label for="recipients">Send test emails to</label>
+    <input type="text" id="recipients" name="recipients" value="{{ s.recipients|join(', ') }}" placeholder="you@example.com">
+    <p class="helptext">Used only by the test buttons below; not saved.</p>
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <h2>Delivery method</h2>
+    <label for="transport">How should email be sent?</label>
+    <select id="transport" name="transport">
+      <option value="m365" {% if s.transport == "m365" %}selected{% endif %}>Microsoft 365 (OAuth 2.0 via Microsoft Graph)</option>
+      <option value="smtp" {% if s.transport == "smtp" %}selected{% endif %}>SMTP server</option>
+      {% if allow_inherit %}
+      <option value="inherit" {% if s.transport == "inherit" %}selected{% endif %}>Use the MSP-wide sender</option>
+      {% endif %}
+    </select>
+
+    <div id="sec-m365">
+      <label for="m365_tenant_id">Directory (tenant) ID *</label>
+      <input type="text" id="m365_tenant_id" name="m365_tenant_id" value="{{ s.m365.tenant_id }}">
+      <label for="m365_client_id">Application (client) ID *</label>
+      <input type="text" id="m365_client_id" name="m365_client_id" value="{{ s.m365.client_id }}">
+      <label for="m365_client_secret">Client secret *</label>
+      <input type="password" id="m365_client_secret" name="m365_client_secret"
+             placeholder="{{ '(unchanged - leave blank to keep current value)' if s.m365.client_secret else 'Enter the secret Value' }}">
+      <details style="margin-top:0.75rem;">
+        <summary>How to set up Microsoft 365 sending (no user sign-in needed)</summary>
+        <ol>
+          <li>In the Entra admin center go to <strong>App registrations &gt; New registration</strong>. Single tenant, no redirect URI.</li>
+          <li>Copy the <strong>Directory (tenant) ID</strong> and <strong>Application (client) ID</strong> from the Overview page into the fields above.</li>
+          <li>Under <strong>Certificates &amp; secrets</strong> create a client secret and paste its <strong>Value</strong> (not the Secret ID) above.</li>
+          <li>Pick the mailbox alerts are sent from, for example <em>acme-alerts@yourdomain.com</em>. A shared mailbox works and needs no license. Enter it as the sender below.</li>
+          <li><strong>Allow the app to send mail, scoped to that one mailbox (recommended).</strong>
+            The Microsoft Graph <em>Mail.Send</em> application permission lets an app send as <em>any</em> mailbox in the tenant.
+            Instead of granting it tenant-wide in Entra, use Exchange Online <strong>RBAC for Applications</strong>:
+            <code>New-ServicePrincipal</code>, a <code>New-ManagementScope</code> that matches only the alert mailbox, then
+            <code>New-ManagementRoleAssignment</code> with the <em>Application Mail.Send</em> role, and check it with
+            <code>Test-ServicePrincipalAuthorization</code>. Do not also leave an unscoped Mail.Send grant in Entra, because the two add together.</li>
+          <li><em>Quick alternative (lab/testing only):</em> Entra <strong>API permissions &gt; Add a permission &gt; Microsoft Graph &gt;
+            Application permissions &gt; Mail.Send</strong>, then <strong>Grant admin consent</strong>. This allows sending as any mailbox.</li>
+          <li>Use <strong>Test connection</strong> (checks the app can sign in) and then <strong>Send test email</strong> (proves the mailbox can send).</li>
+        </ol>
+        <p class="helptext">Why not SMTP for Microsoft 365? Exchange Online is retiring Basic authentication for SMTP AUTH; Graph with OAuth is not affected.</p>
+      </details>
+    </div>
+
+    <div id="sec-smtp">
+      <label for="smtp_host">SMTP server *</label>
+      <input type="text" id="smtp_host" name="smtp_host" value="{{ s.smtp.host }}" placeholder="smtp.example.com">
+      <label for="smtp_port">Port</label>
+      <input type="number" id="smtp_port" name="smtp_port" value="{{ s.smtp.port }}" min="1" max="65535">
+      <label for="smtp_security">Encryption</label>
+      <select id="smtp_security" name="smtp_security">
+        <option value="starttls" {% if s.smtp.security == "starttls" %}selected{% endif %}>STARTTLS (usually port 587)</option>
+        <option value="ssl" {% if s.smtp.security == "ssl" %}selected{% endif %}>SSL/TLS (usually port 465)</option>
+        <option value="none" {% if s.smtp.security == "none" %}selected{% endif %}>None (usually port 25, internal relay only)</option>
+      </select>
+      <label for="smtp_username">Username (leave blank if the server needs no login)</label>
+      <input type="text" id="smtp_username" name="smtp_username" value="{{ s.smtp.username }}" autocomplete="off">
+      <label for="smtp_password">Password</label>
+      <input type="password" id="smtp_password" name="smtp_password" autocomplete="new-password"
+             placeholder="{{ '(unchanged - leave blank to keep current value)' if s.smtp.password else 'Enter value' }}">
+      <div class="checkbox-row">
+        <input type="checkbox" id="smtp_verify_tls" name="smtp_verify_tls" {% if s.smtp.verify_tls %}checked{% endif %}>
+        <label for="smtp_verify_tls" style="margin:0;">Verify the server's TLS certificate</label>
+      </div>
+    </div>
+
+    <div id="sec-from">
+      <label for="from_address"><span id="from_label">From address</span> *</label>
+      <input type="text" id="from_address" name="from_address" value="{{ s.from_address }}" placeholder="acme-alerts@example.com">
+      <label for="from_name">From name</label>
+      <input type="text" id="from_name" name="from_name" value="{{ s.from_name }}" maxlength="60">
+    </div>
+
+    {% if allow_inherit %}
+    <div id="sec-inherit">
+      {% if fleet_summary %}
+        <p class="helptext">Alerts for this customer are sent through: <strong>{{ fleet_summary }}</strong>.</p>
+      {% else %}
+        <p class="helptext"><strong>No MSP-wide sender is configured yet.</strong> An owner must set it up under
+        Notifications in the MSP Console before this option will work.</p>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+
+  {% if mode != "fleet" %}
+  <div class="card">
+    <h2>What to alert on</h2>
+    {% for key, meta in events.items() %}
+    <div class="checkbox-row">
+      <input type="checkbox" id="event_{{ key }}" name="event_{{ key }}" {% if s.events.get(key) %}checked{% endif %}>
+      <label for="event_{{ key }}" style="margin:0;">{{ meta.label }}</label>
+    </div>
+    {% endfor %}
+    <label for="expiry_warn_days">Warn when a certificate has this many days left</label>
+    <input type="number" id="expiry_warn_days" name="expiry_warn_days" value="{{ s.expiry_warn_days }}" min="1" max="60">
+    <p class="helptext">Let's Encrypt certificates normally renew at 30 days, so a warning at 14 days means renewal has been failing
+    for about two weeks. The expiry scan sends one summary email, repeating every 3 days (daily once 3 days or less remain).
+    Failure alerts for the same domain are limited to one every 6 hours.</p>
+  </div>
+  {% endif %}
+
+  <div class="form-actions">
+    {% if can_write %}<button type="submit" name="action" value="save" class="btn">{{ "Save sender" if mode == "fleet" else "Save settings" }}</button>{% endif %}
+    {% if can_write %}
+    <button type="button" class="btn btn-secondary" data-test-action="test_connection">Test connection</button>
+    <button type="button" class="btn btn-secondary" data-test-action="send_test">Send test email</button>
+    {% endif %}
+  </div>
+  <p id="notif-result" role="status" aria-live="polite" style="font-weight:600; margin-top:0.75rem;"></p>
+  <p class="helptext">The test buttons use what is currently typed in the form, so you can test before saving.
+  They do not save anything.</p>
+</form>
+
+<script>
+(function () {
+  var form = document.getElementById('notif-form');
+  var transport = document.getElementById('transport');
+  var out = document.getElementById('notif-result');
+  var testUrl = {{ test_url|tojson }};
+
+  function sync() {
+    var v = transport.value;
+    ['smtp', 'm365', 'inherit'].forEach(function (k) {
+      var el = document.getElementById('sec-' + k);
+      if (el) { el.style.display = (k === v) ? '' : 'none'; }
+    });
+    var from = document.getElementById('sec-from');
+    if (from) { from.style.display = (v === 'inherit') ? 'none' : ''; }
+    var lbl = document.getElementById('from_label');
+    if (lbl) { lbl.textContent = (v === 'm365') ? 'Send as (sender mailbox)' : 'From address'; }
+  }
+  transport.addEventListener('change', sync);
+  sync();
+
+  Array.prototype.forEach.call(document.querySelectorAll('[data-test-action]'), function (btn) {
+    btn.addEventListener('click', function () {
+      out.style.color = '';
+      out.textContent = 'Working...';
+      btn.disabled = true;
+      var fd = new FormData(form);
+      fd.set('action', btn.getAttribute('data-test-action'));
+      fetch(testUrl, { method: 'POST', body: fd, credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(function (j) { out.style.color = j.ok ? '#1a7f37' : '#b42318'; out.textContent = j.message; })
+        .catch(function () { out.style.color = '#b42318'; out.textContent = 'The request failed. Check that you are still signed in.'; })
+        .then(function () { btn.disabled = false; });
+    });
+  });
+}());
+</script>

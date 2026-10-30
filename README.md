@@ -442,6 +442,15 @@ _acme-challenge.customer.org   CNAME   customer-org.acme.example.net
 - A provider that is another alias's `target_provider` cannot be deleted until the alias is removed.
 - For Network Solutions the CNAME goes in the Advanced DNS Manager for the domain (domain must be on Network Solutions' nameservers).
 
+## Email alerting
+
+Optional email alerts (certificate expiring, DNS challenge failed, renewal failed, deployment failed, and optionally renewed / deployed) on a **Notifications** page in both profiles. Send through
+**Microsoft 365 with OAuth 2.0** (Microsoft Graph, app-only, no user sign-in) or any **SMTP** server; under msp-panos an owner can
+configure one **MSP-wide sender** that customers share while keeping their own recipients. Test buttons verify the setup before you save.
+A daily systemd timer scans the certificates on disk, so it also catches a renewal job that has silently stopped. Setup (including how
+to scope the Microsoft 365 app to a single mailbox), the timer installer, CLI and troubleshooting are in
+[docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md).
+
 ## Adding a new DNS provider
 
 1. Create `dns_providers/<name>.py` implementing `add_txt_record` / `remove_txt_record` from `base.py`

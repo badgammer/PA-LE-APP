@@ -1,3 +1,49 @@
+# Change Tree -- Email Alerting (Notifications), Hook Python Fix, config_store Bug Fix
+
+#### ! Bug fixes
+webui/config_store.py     deploy_provider_in_use() contained the DNS CNAME-alias block meant only for dns_provider_in_use(), and it
+                          referenced a variable (instance_name) that does not exist in that function, so deleting ANY deploy target
+                          raised NameError. A bulk string replace in the previous change had matched both functions. Removed from
+                          deploy_provider_in_use(); regression test added.
+bin/acme-renew.sh         The certbot hooks (dns_dispatcher.py, deploy_certificate.py) and the script's own helper calls ran under the
+bin/redeploy-cert.sh      SYSTEM python3, not the appliance venv, so packages installed only in the venv were not importable when a
+                          renewal actually ran: dnspython (rfc2136 and the cname_alias verify step added in the previous change),
+                          boto3 (route53) and pywinrm (iis). Both scripts now use $APPLIANCE_DIR/venv/bin/python when it exists and
+                          fall back to python3 otherwise, and the hooks are passed to certbot as "<python> <script>".
+deploy_certificate.py     A deploy provider raising anything other than DeployProviderError (e.g. a library error) crashed the whole run
+                          and skipped the remaining targets. It is now treated like any failed target: logged with a traceback, counted
+                          as a failure (exit status unchanged: 1), and the remaining targets still deploy.
+
+#### + New files
+notifications.py                            Core module: settings model, form parsing, validation; SMTP and Microsoft 365 (Graph, client-credentials OAuth) senders; MSP-wide sender ("inherit"); rate-limited notify_event() that never raises; certificate-expiry scan + digest; CLI.
+bin/acme-notify.py                          CLI wrapper: test | event | check-expiry [--all-customers] [--dry-run].
+bin/install-notify-timer.sh                 Installs/removes the daily acme-notify-check systemd timer for the host's profile. Called by both profile installers.
+webui/templates/_notification_form.html     Shared form (byte-identical copy in msp_console/templates/).
+webui/templates/notifications.html          Single-instance page.
+msp_console/templates/_notification_form.html, customer_notifications.html, fleet_notifications.html   Per-customer page and owner-only MSP-wide sender page.
+docs/NOTIFICATIONS.md                       Setup guide (incl. scoping Mail.Send), timer, CLI, troubleshooting.
+tests/test_notifications.py                 29 tests: real local SMTP server (plain / STARTTLS / implicit TLS / AUTH, TLS verification), faked Microsoft Graph, real openssl certificates for the expiry scan.
+tests/test_alert_wiring.py                  13 tests that run the REAL bin/acme-renew.sh and bin/redeploy-cert.sh (fake certbot) and deploy_certificate.py against a local mail server.
+
+#### ~ Modified files
+webui/app.py                     + /notifications (save) and /notifications/test (JSON endpoint used by the Test buttons).
+msp_console/app.py               + /customers/<slug>/notifications (+ /test) and owner-only /notifications (+ /test) for the MSP-wide sender; audit-logged.
+dns_dispatcher.py                Sends a rate-limited dns_failure alert when a DNS provider call fails. Lazy import, fully guarded.
+bin/acme-renew.sh                Sends renewal_failed (with the tail of certbot's output) when certbot fails for a domain.
+deploy_certificate.py            Sends renewal_success / deploy_success / deploy_failed per domain entry.
+bin/redeploy-cert.sh             Sets ACME_APPLIANCE_REDEPLOY=1 so a redeploy is not reported as a renewal.
+lib/profile-single-instance.sh, lib/profile-msp-panos.sh   Install the daily expiry-check timer.
+webui/templates/base.html, msp_console/templates/base.html, _customer_subnav.html   Notifications nav links (the MSP-wide link is owner-only).
+config/appliance.yaml.example, README.md   Commented example block; "Email alerting" section.
+
+#### Design notes
+- Microsoft 365 uses Graph sendMail with the app-only client-credentials flow, not SMTP AUTH (Basic auth for SMTP AUTH is being retired in Exchange Online) and not an interactive OAuth consent flow (no redirect URI, no refresh tokens to expire). Gmail / Google Workspace OAuth is intentionally not offered.
+- The Mail.Send *application* permission is tenant-wide unless scoped. The page and docs recommend Exchange RBAC for Applications scoped to the alert mailbox. The Test button treats "no Mail.Send role in the token" as an informational note, not an error, because a scoped setup has no such role in the token.
+- Test buttons are fetch() calls that post the current form values and save nothing, so a newly typed secret can be tested without being stored and without being echoed back. Secrets are never sent to the browser; a blank secret field keeps the stored value.
+- Alerts never affect the thing they report on: send failures are logged and swallowed, and every hook keeps its previous exit status. Failure alerts are rate-limited per event + domain (6 hours); a failed send is not recorded, so the next occurrence retries.
+- Settings live in a `notifications:` block of each appliance.yaml (0600, included in the existing config backups). The MSP-wide sender lives in /etc/acme-appliance/msp-console/notifications.yaml (0600, owner-only to edit).
+- Not verified: Flask is not installed in the build environment, so the routes were checked by compiling, by a static check that every url_for() in every template points at a real route, by rendering all pages through the real base templates with Jinja (nav links present, secrets absent, page JavaScript passes node --check), and by testing the logic they call. The systemd timer was verified with a stubbed systemctl and has not run on a real systemd host. Nothing was sent through real Microsoft 365 or a real mail server.
+
 # Change Tree -- New DNS Providers: GoDaddy, Namecheap, RFC 2136, Network Solutions
 
 #### + New files

@@ -126,6 +126,10 @@ _install_msp_console() {
     systemctl enable --now acme-msp-console.service
     systemctl enable --now acme-msp-renewal.timer
 
+    echo "  Installing the daily certificate-expiry email check for every customer (does nothing until alerts are enabled)..."
+    APPLIANCE_DIR="$appliance_dir" bash "$appliance_dir/bin/install-notify-timer.sh" \
+        || echo "    WARNING: could not install the expiry-check timer -- run bin/install-notify-timer.sh by hand later."
+
     if systemctl is-active --quiet firewalld; then
         echo "  Opening firewalld port 9443/tcp for the MSP Console..."
         firewall-cmd --permanent --add-port=9443/tcp

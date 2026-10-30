@@ -42,6 +42,18 @@ def load_config():
         return yaml.safe_load(f)
 
 
+def _notify(event: str, domain: str, detail: str = "") -> None:
+    """
+    Email alert (see docs/NOTIFICATIONS.md). Lazily imported and fully guarded: a problem in the
+    alert code must never change what this script does or how it exits.
+    """
+    try:
+        import notifications
+        notifications.notify_event(event, domain, detail, config_path=CONFIG_PATH)
+    except Exception:  # noqa: BLE001
+        log.exception("Could not send '%s' notification for %s", event, domain)
+
+
 def _entry_contains_name(entry: dict, domain: str) -> bool:
     """
     True if `domain` appears in this entry's additional_names list --
@@ -85,6 +97,8 @@ def main() -> int:
     processed_entry_names = set()
     matched_any = False
     any_failures = False
+    # bin/redeploy-cert.sh sets this: re-deploying an existing certificate is not a renewal.
+    is_redeploy = os.environ.get("ACME_APPLIANCE_REDEPLOY") == "1"
 
     for domain in renewed_domains.split():
         domain_cfg = find_domain_config(cfg, domain)
@@ -98,6 +112,9 @@ def main() -> int:
         cert_name = f"{domain_cfg['cert_name_prefix']}-{stamp}"
         log.info("Deploying %s (domain entry=%s) as cert_name=%s",
                   cert_path, domain_cfg["name"], cert_name)
+        if not is_redeploy:
+            _notify("renewal_success", domain_cfg["name"],
+                    f"A certificate was issued or renewed for: {renewed_domains}")
 
         targets = domain_cfg.get("deploy_targets", [])
         if not targets:
@@ -107,11 +124,14 @@ def main() -> int:
             )
             continue
 
+        entry_failures = []   # (target instance, reason) for the alert email
+        deployed_to = []
         for target_entry in targets:
             instance_name = target_entry.get("target")
             instance_cfg = cfg.get("deploy_providers", {}).get(instance_name)
             if instance_cfg is None:
                 any_failures = True
+                entry_failures.append((instance_name, "unknown deploy target instance"))
                 log.error(
                     "Domain entry '%s' references unknown deploy target instance '%s'",
                     domain_cfg["name"], instance_name,
@@ -130,13 +150,32 @@ def main() -> int:
                     "Successfully deployed %s to deploy target '%s' (type=%s)",
                     cert_name, instance_name, instance_cfg["type"],
                 )
+                deployed_to.append(instance_name)
             except DeployProviderError as exc:
                 any_failures = True
+                entry_failures.append((instance_name, str(exc)))
                 log.error(
                     "Failed deploying %s to deploy target '%s': %s",
                     cert_name, instance_name, exc,
                 )
                 continue
+            except Exception as exc:  # noqa: BLE001
+                # A provider raised something that isn't a DeployProviderError (e.g. a library
+                # error). Treat it exactly like a failed target so the remaining targets still
+                # get the certificate and the failure is reported instead of killing the run.
+                any_failures = True
+                entry_failures.append((instance_name, f"{type(exc).__name__}: {exc}"))
+                log.exception(
+                    "Unexpected error deploying %s to deploy target '%s'", cert_name, instance_name,
+                )
+                continue
+        if entry_failures:
+            detail = "\n".join(f"- {name}: {reason}" for name, reason in entry_failures)
+            if deployed_to:
+                detail += "\n\nDeployed OK to: " + ", ".join(deployed_to)
+            _notify("deploy_failed", domain_cfg["name"], detail)
+        elif deployed_to:
+            _notify("deploy_success", domain_cfg["name"], "Deployed to: " + ", ".join(deployed_to))
 
     if not matched_any:
         log.warning(

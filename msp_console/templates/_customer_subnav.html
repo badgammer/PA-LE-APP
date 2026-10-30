@@ -6,11 +6,12 @@
 
    Callers must set `slug` and `active_tab` via {% set %} immediately
    before including this partial. `active_tab` must be one of:
-   "overview", "domains", "dns_providers", "deploy_providers", "settings" #}
+   "overview", "domains", "dns_providers", "deploy_providers", "settings", "notifications" #}
 <nav class="subnav">
   <a href="{{ url_for('customer_detail', slug=slug) }}" class="{{ 'active' if active_tab == 'overview' }}">Overview</a>
   <a href="{{ url_for('customer_domains_list', slug=slug) }}" class="{{ 'active' if active_tab == 'domains' }}">Domains</a>
   <a href="{{ url_for('customer_dns_providers_list', slug=slug) }}" class="{{ 'active' if active_tab == 'dns_providers' }}">DNS Providers</a>
   <a href="{{ url_for('customer_deploy_providers_list', slug=slug) }}" class="{{ 'active' if active_tab == 'deploy_providers' }}">Deploy Targets</a>
   <a href="{{ url_for('customer_settings', slug=slug) }}" class="{{ 'active' if active_tab == 'settings' }}">Settings</a>
+  <a href="{{ url_for('customer_notifications', slug=slug) }}" class="{{ 'active' if active_tab == 'notifications' }}">Notifications</a>
 </nav>

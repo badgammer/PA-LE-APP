@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Notifications -- {{ slug }}{% endblock %}
+{% block content %}
+<h1>{{ slug }}: Notifications</h1>
+{% set active_tab = "notifications" %}
+{% include "_customer_subnav.html" %}
+<p class="helptext">Email alerts for this customer's certificates. Choose its own sender, or use the MSP-wide sender so the credentials are only stored once.
+{% if current_user_is_owner %}<a href="{{ url_for('fleet_notifications') }}">Configure the MSP-wide sender</a>.{% endif %}</p>
+{% if not can_write %}<p class="helptext"><strong>Read-only:</strong> your account can view but not change these settings.</p>{% endif %}
+{% set mode = "customer" %}
+{% set allow_inherit = True %}
+{% include "_notification_form.html" %}
+{% endblock %}

@@ -68,6 +68,20 @@ dns_providers:
       remove_url: "https://dns-shim.internal.example.com/api/txt/remove"
       auth_header: "Bearer CHANGE-ME"
 
+# notifications: optional email alerts -- normally configured on the Notifications page rather than by hand.
+# (Commented out so new customer namespaces seeded from this file stay inert.)
+#notifications:
+#  enabled: true
+#  transport: m365                  # m365 | smtp | inherit (msp-panos customers: use the MSP-wide sender)
+#  from_address: "acme-alerts@example.com"
+#  from_name: "ACME Appliance"
+#  recipients: ["netops@example.com"]
+#  subject_prefix: "[ACME]"
+#  expiry_warn_days: 14
+#  events: {cert_expiring: true, dns_failure: true, renewal_failed: true, deploy_failed: true, renewal_success: false, deploy_success: false}
+#  m365: {tenant_id: "CHANGE-ME", client_id: "CHANGE-ME", client_secret: "CHANGE-ME"}
+#  smtp: {host: "smtp.example.com", port: 587, security: starttls, username: "", password: "", verify_tls: true}
+
 # deploy_providers[]: named instances of ANY deploy target TYPE this
 # appliance supports (see deploy_providers/ -- "panos" for Palo Alto
 # firewalls, "iis" for Windows/IIS servers via WinRM, and potentially

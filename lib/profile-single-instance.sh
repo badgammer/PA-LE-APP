@@ -76,6 +76,10 @@ run_profile_install() {
     systemctl enable --now acme-webui.service
     systemctl enable --now acme-renew.timer
 
+    echo "==> [single-instance] Installing the daily certificate-expiry email check (does nothing until alerts are enabled on the Notifications page)..."
+    APPLIANCE_DIR="$appliance_dir" bash "$appliance_dir/bin/install-notify-timer.sh" \
+        || echo "    WARNING: could not install the expiry-check timer -- run bin/install-notify-timer.sh by hand later."
+
     echo ""
     echo "==================================================================="
     echo " Done. Web UI should now be reachable at:"

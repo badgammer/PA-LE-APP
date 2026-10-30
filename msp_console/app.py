@@ -52,6 +52,7 @@ import actions  # noqa: E402
 import config_store as store  # noqa: E402
 import test_connections  # noqa: E402
 import domain_logic  # noqa: E402
+import notifications  # noqa: E402
 from dns_providers import PROVIDER_FIELDS  # noqa: E402
 from deploy_providers import INSTANCE_FIELDS, TARGET_FIELDS  # noqa: E402
 from cert_naming import safe_cert_name  # noqa: E402
@@ -852,6 +853,98 @@ def customer_domain_download(slug, name):
 
     zip_name = f"{safe_cert_name(name)}-certs.zip"
     return send_file(buf, mimetype="application/zip", as_attachment=True, download_name=zip_name)
+
+
+# ------------------------------------------------------------ notifications (email alerting)
+
+def _notif_result(action: str, settings: dict, label: str = ""):
+    """Run the Test connection / Send test email buttons. Returns (ok, message); never raises."""
+    try:
+        if action == "test_connection":
+            return True, notifications.test_connection(settings)
+        if action == "send_test":
+            return True, notifications.send_test_email(settings, label=label)
+        return False, "Unknown action."
+    except notifications.NotificationError as exc:
+        return False, str(exc)
+    except Exception as exc:  # noqa: BLE001
+        return False, f"Unexpected error: {exc}"
+
+
+@app.route("/customers/<slug>/notifications", methods=["GET", "POST"])
+@login_required
+def customer_notifications(slug):
+    require_customer_read(slug)
+    cfg = _load_customer_config(slug)
+    current = notifications.get_config(cfg)
+    settings = current
+    can_write = auth.can_write_customer(current_user(), slug)
+    if request.method == "POST":
+        require_customer_write(slug)
+        check_csrf()
+        settings = notifications.settings_from_form(request.form, current, allow_inherit=True)
+        errors = notifications.validate(settings)
+        if errors:
+            for message in errors:
+                flash(message, "error")
+        else:
+            cfg["notifications"] = settings
+            _save_customer_config(slug, cfg)
+            _console_log(f"'{current_user()}' updated notification settings for '{slug}'")
+            flash("Notification settings saved.", "success")
+            return redirect(url_for("customer_notifications", slug=slug))
+    return render_template(
+        "customer_notifications.html", slug=slug, can_write=can_write, s=settings,
+        events=notifications.ui_events(), fleet_summary=notifications.fleet_sender_summary(),
+        test_url=url_for("customer_notifications_test", slug=slug),
+    )
+
+
+@app.route("/customers/<slug>/notifications/test", methods=["POST"])
+@login_required
+def customer_notifications_test(slug):
+    require_customer_write(slug)
+    check_csrf()
+    current = notifications.get_config(_load_customer_config(slug))
+    settings = notifications.settings_from_form(request.form, current, allow_inherit=True)
+    ok, message = _notif_result(request.form.get("action", ""), settings, label=slug)
+    return jsonify({"ok": ok, "message": message})
+
+
+@app.route("/notifications", methods=["GET", "POST"])
+@owner_required
+def fleet_notifications():
+    """The ONE mail sender shared by every customer set to 'Use the MSP-wide sender'."""
+    current = notifications.load_fleet_settings()
+    settings = current
+    if request.method == "POST":
+        check_csrf()
+        settings = notifications.settings_from_form(request.form, current)
+        settings["enabled"] = True  # not meaningful for the fleet sender; validate as a complete sender
+        errors = notifications.validate(settings, sender_only=True)
+        if errors:
+            for message in errors:
+                flash(message, "error")
+        else:
+            notifications.save_fleet_settings(settings)
+            _console_log(f"'{current_user()}' updated the MSP-wide notification sender ({settings['transport']})")
+            flash("MSP-wide sender saved.", "success")
+            return redirect(url_for("fleet_notifications"))
+    return render_template(
+        "fleet_notifications.html", s=settings, events=notifications.ui_events(),
+        test_url=url_for("fleet_notifications_test"),
+    )
+
+
+@app.route("/notifications/test", methods=["POST"])
+@owner_required
+def fleet_notifications_test():
+    check_csrf()
+    current = notifications.load_fleet_settings()
+    settings = notifications.settings_from_form(request.form, current)
+    settings["enabled"] = True
+    ok, message = _notif_result(request.form.get("action", ""), settings, label="MSP")
+    return jsonify({"ok": ok, "message": message})
 
 
 # ---------------------------------------------------------------- admins
